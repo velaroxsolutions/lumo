@@ -1,0 +1,193 @@
+// Local-first storage (F12.1). Every write lands here first; a server, when it
+// exists, is a backup and a bridge between devices — never a blocker.
+//
+// Migrations are additive and versioned with PRAGMA user_version. Never drop
+// a table or delete the database to get past a migration error.
+//
+// IDs are random text and every row carries updated_at, so v2 sync can do
+// last-write-wins per row without reshaping anything.
+
+export const SCHEMA_VERSION = 1;
+
+const MIGRATIONS = {
+  1: `
+    CREATE TABLE IF NOT EXISTS areas (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL,
+      icon TEXT NOT NULL DEFAULT 'circle',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      archived INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY NOT NULL,
+      area_id TEXT NOT NULL REFERENCES areas(id),
+      title TEXT NOT NULL,
+      target_value REAL NOT NULL DEFAULT 1,
+      current_value REAL NOT NULL DEFAULT 0,
+      unit TEXT NOT NULL DEFAULT '',
+      deadline TEXT,
+      is_focus INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active',
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS rituals (
+      id TEXT PRIMARY KEY NOT NULL,
+      area_id TEXT NOT NULL REFERENCES areas(id),
+      name TEXT NOT NULL,
+      weekday_mask INTEGER NOT NULL DEFAULT 62,
+      start_time TEXT,
+      duration_minutes INTEGER NOT NULL DEFAULT 60,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      area_id TEXT NOT NULL REFERENCES areas(id),
+      goal_id TEXT REFERENCES goals(id),
+      title TEXT NOT NULL,
+      notes TEXT NOT NULL DEFAULT '',
+      estimated_minutes INTEGER NOT NULL DEFAULT 30,
+      actual_minutes INTEGER,
+      priority TEXT NOT NULL DEFAULT 'med',
+      deadline TEXT,
+      status TEXT NOT NULL DEFAULT 'backlog',
+      deferral_count INTEGER NOT NULL DEFAULT 0,
+      completed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+    CREATE TABLE IF NOT EXISTS day_plans (
+      id TEXT PRIMARY KEY NOT NULL,
+      date TEXT NOT NULL UNIQUE,
+      system_preset TEXT NOT NULL,
+      review_note TEXT NOT NULL DEFAULT '',
+      mood INTEGER,
+      closed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS plan_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      day_plan_id TEXT NOT NULL REFERENCES day_plans(id),
+      task_id TEXT REFERENCES tasks(id),
+      ritual_id TEXT REFERENCES rituals(id),
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      start_time TEXT,
+      duration_minutes INTEGER,
+      outcome TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_items_plan ON plan_items(day_plan_id);
+    CREATE INDEX IF NOT EXISTS idx_items_task ON plan_items(task_id);
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT
+    );
+  `,
+};
+
+export async function initDb(db) {
+  // Connection settings sit outside the migration transaction.
+  try {
+    await db.execAsync('PRAGMA journal_mode = WAL;');
+  } catch {
+    // Not every backend (wa-sqlite on web) supports WAL; the default is fine.
+  }
+  await db.execAsync('PRAGMA foreign_keys = ON;');
+
+  const row = await db.getFirstAsync('PRAGMA user_version');
+  const version = row?.user_version ?? 0;
+  if (version > SCHEMA_VERSION) {
+    throw new Error('This database was written by a newer version of lumo.');
+  }
+  if (version === SCHEMA_VERSION) return;
+
+  await db.withTransactionAsync(async () => {
+    for (let v = version + 1; v <= SCHEMA_VERSION; v += 1) {
+      await db.execAsync(MIGRATIONS[v]);
+    }
+    await db.execAsync(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+  });
+}
+
+export const TABLES = ['areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings'];
+
+const ORDER = {
+  areas: 'sort_order, created_at',
+  goals: 'created_at',
+  rituals: 'start_time, created_at',
+  tasks: 'created_at',
+  day_plans: 'date',
+  plan_items: 'sort_order, created_at',
+  settings: 'key',
+};
+
+export async function loadTable(db, table) {
+  if (!TABLES.includes(table)) throw new Error(`Unknown table ${table}`);
+  return db.getAllAsync(`SELECT * FROM ${table} ORDER BY ${ORDER[table]}`);
+}
+
+export function uid() {
+  const rnd = Math.random().toString(36).slice(2, 10);
+  return `${Date.now().toString(36)}${rnd}`;
+}
+
+export const nowIso = () => new Date().toISOString();
+
+// Allow-listed column writes. Column names never come from user input, but
+// keep them checked anyway: bindings carry values, not identifiers.
+const COLUMNS = {
+  areas: ['name', 'color', 'icon', 'sort_order', 'archived'],
+  goals: ['area_id', 'title', 'target_value', 'current_value', 'unit', 'deadline', 'is_focus', 'status', 'completed_at'],
+  rituals: ['area_id', 'name', 'weekday_mask', 'start_time', 'duration_minutes', 'active'],
+  tasks: ['area_id', 'goal_id', 'title', 'notes', 'estimated_minutes', 'actual_minutes', 'priority', 'deadline', 'status', 'deferral_count', 'completed_at'],
+  day_plans: ['date', 'system_preset', 'review_note', 'mood', 'closed_at'],
+  plan_items: ['day_plan_id', 'task_id', 'ritual_id', 'sort_order', 'start_time', 'duration_minutes', 'outcome'],
+};
+
+function checkCols(table, obj) {
+  const allowed = COLUMNS[table];
+  const keys = Object.keys(obj);
+  for (const k of keys) if (!allowed.includes(k)) throw new Error(`Column ${table}.${k} not writable`);
+  return keys;
+}
+
+export async function insert(db, table, values) {
+  const id = values.id || uid();
+  const now = nowIso();
+  const { id: _ignored, ...rest } = values;
+  const keys = checkCols(table, rest);
+  const cols = ['id', ...keys, 'created_at', 'updated_at'];
+  const params = [id, ...keys.map((k) => rest[k]), now, now];
+  await db.runAsync(
+    `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    params,
+  );
+  return id;
+}
+
+export async function update(db, table, id, patch) {
+  const keys = checkCols(table, patch);
+  if (!keys.length) return;
+  const sets = [...keys.map((k) => `${k} = ?`), 'updated_at = ?'];
+  await db.runAsync(`UPDATE ${table} SET ${sets.join(', ')} WHERE id = ?`, [
+    ...keys.map((k) => patch[k]),
+    nowIso(),
+    id,
+  ]);
+}
+
+export async function setSetting(db, key, value) {
+  await db.runAsync(
+    'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, value == null ? null : String(value)],
+  );
+}

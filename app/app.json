@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "lumo",
+    "slug": "lumo",
+    "scheme": "lumo",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#171334",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.velarox.lumo"
+    },
+    "android": {
+      "package": "com.velarox.lumo",
+      "adaptiveIcon": {
+        "backgroundColor": "#FFC53D",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "output": "single",
+      "name": "lumo",
+      "themeColor": "#171334",
+      "backgroundColor": "#171334"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "headers": {
+            "Cross-Origin-Embedder-Policy": "credentialless",
+            "Cross-Origin-Opener-Policy": "same-origin"
+          }
+        }
+      ],
+      "expo-sqlite",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#171334",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 160
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#FFC53D"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}
