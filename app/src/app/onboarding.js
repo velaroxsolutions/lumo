@@ -12,6 +12,7 @@ import { systemList, DEFAULT_SYSTEM } from '../core/systems';
 import { notificationsSupported, requestPermission } from '../core/notifications';
 import { BrandMark } from '../components/WeekMark';
 import { Button, Chip, Field, Icon, Kicker, Press, Screen, Stepper, T } from '../components/ui';
+import { AccountSheet } from '../components/AccountSheet';
 
 const STARTERS = ['Academics', 'Career', 'Fitness', 'Projects', 'Personal'];
 
@@ -24,6 +25,7 @@ export default function Onboarding() {
   const [system, setSystem] = useState(DEFAULT_SYSTEM);
   const [evening, setEvening] = useState(21 * 60);
   const [busy, setBusy] = useState(false);
+  const [signingIn, setSigningIn] = useState(false);
 
   const chosen = areas.filter((a) => a.on);
 
@@ -65,6 +67,10 @@ export default function Onboarding() {
       <T style={{ color: colors.muted, textAlign: 'center', marginTop: space.xl, maxWidth: 360 }}>
         Two minutes each evening: close today, plan tomorrow. Every day you show up lights a dot.
       </T>
+      <Press onPress={() => setSigningIn(true)} style={{ marginTop: space.xl, padding: space.sm }}>
+        <T v="emphasis" style={{ color: colors.sunbeam }}>I already have an account</T>
+      </Press>
+      <AccountSheet visible={signingIn} initialMode="login" onClose={() => setSigningIn(false)} onDone={() => router.replace('/')} />
     </View>,
 
     // 1 — areas

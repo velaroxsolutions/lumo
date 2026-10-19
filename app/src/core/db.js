@@ -7,7 +7,7 @@
 // IDs are random text and every row carries updated_at, so v2 sync can do
 // last-write-wins per row without reshaping anything.
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const MIGRATIONS = {
   1: `
@@ -92,6 +92,28 @@ const MIGRATIONS = {
       value TEXT
     );
   `,
+  // v2 — sync. An outbox of local changes to push, device-local state that
+  // never syncs (session token, cursor), and date-based day-plan ids so two
+  // devices planning the same day write the same row instead of colliding.
+  2: `
+    CREATE TABLE IF NOT EXISTS sync_outbox (
+      seq INTEGER PRIMARY KEY AUTOINCREMENT,
+      tbl TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      op TEXT NOT NULL,
+      fields TEXT NOT NULL DEFAULT '[]',
+      full INTEGER NOT NULL DEFAULT 0,
+      ts TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS local_kv (
+      key TEXT PRIMARY KEY NOT NULL,
+      value TEXT
+    );
+    PRAGMA defer_foreign_keys = ON;
+    UPDATE plan_items SET day_plan_id = 'dp-' || (SELECT date FROM day_plans WHERE id = plan_items.day_plan_id)
+      WHERE day_plan_id NOT LIKE 'dp-%';
+    UPDATE day_plans SET id = 'dp-' || date WHERE id NOT LIKE 'dp-%';
+  `,
 };
 
 export async function initDb(db) {
@@ -119,6 +141,43 @@ export async function initDb(db) {
 }
 
 export const TABLES = ['areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings'];
+
+// Deterministic ids for rows two devices might both create for the same day.
+export const planId = (date) => `dp-${date}`;
+export const planItemId = (date, { taskId, ritualId }) => (taskId ? `pi-${date}-${taskId}` : `pr-${date}-${ritualId}`);
+
+// ---- change tracking ---------------------------------------------------------
+// While signed in, every tracked write also lands in sync_outbox. Signed out,
+// nothing is recorded (signing in snapshots everything instead).
+let tracking = false;
+export const setTracking = (on) => {
+  tracking = !!on;
+};
+
+async function enqueue(db, tbl, rowId, op, fields = [], full = false) {
+  if (!tracking) return;
+  await db.runAsync('INSERT INTO sync_outbox (tbl, row_id, op, fields, full, ts) VALUES (?, ?, ?, ?, ?, ?)', [
+    tbl,
+    rowId,
+    op,
+    JSON.stringify(fields),
+    full ? 1 : 0,
+    nowIso(),
+  ]);
+}
+
+export async function getLocal(db, key) {
+  const row = await db.getFirstAsync('SELECT value FROM local_kv WHERE key = ?', [key]);
+  return row?.value ?? null;
+}
+
+export async function setLocal(db, key, value) {
+  if (value == null) await db.runAsync('DELETE FROM local_kv WHERE key = ?', [key]);
+  else await db.runAsync(
+    'INSERT INTO local_kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, String(value)],
+  );
+}
 
 const ORDER = {
   areas: 'sort_order, created_at',
@@ -171,6 +230,7 @@ export async function insert(db, table, values) {
     `INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
     params,
   );
+  await enqueue(db, table, id, 'upsert', cols.slice(1), true);
   return id;
 }
 
@@ -183,6 +243,21 @@ export async function update(db, table, id, patch) {
     nowIso(),
     id,
   ]);
+  await enqueue(db, table, id, 'upsert', [...keys, 'updated_at']);
+}
+
+export async function remove(db, table, id) {
+  if (!COLUMNS[table]) throw new Error(`Unknown table ${table}`);
+  await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
+  await enqueue(db, table, id, 'delete');
+}
+
+// Delete every row matching a fixed WHERE clause, tracking each one.
+export async function removeWhere(db, table, where, params) {
+  if (!COLUMNS[table]) throw new Error(`Unknown table ${table}`);
+  const rows = await db.getAllAsync(`SELECT id FROM ${table} WHERE ${where}`, params);
+  for (const r of rows) await remove(db, table, r.id);
+  return rows.length;
 }
 
 export async function setSetting(db, key, value) {
@@ -190,4 +265,19 @@ export async function setSetting(db, key, value) {
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     [key, value == null ? null : String(value)],
   );
+  await enqueue(db, 'settings', key, 'upsert', ['value'], true);
 }
+
+// Columns a pulled row may write locally (everything the app owns).
+export function syncColumns(table) {
+  if (table === 'settings') return ['value'];
+  return [...COLUMNS[table], 'created_at', 'updated_at'];
+}
+
+// Parents a row needs before it can be stored (foreign keys).
+export const PARENTS = {
+  goals: [['area_id', 'areas']],
+  rituals: [['area_id', 'areas']],
+  tasks: [['area_id', 'areas'], ['goal_id', 'goals']],
+  plan_items: [['day_plan_id', 'day_plans'], ['task_id', 'tasks'], ['ritual_id', 'rituals']],
+};
