@@ -1,7 +1,7 @@
 /**
  * @jest-environment node
  */
-import { initDb, insert, update, remove, setSetting, setTracking, planId, SCHEMA_VERSION } from '../src/core/db';
+import { MIGRATIONS, initDb, insert, update, remove, setSetting, setTracking, planId, SCHEMA_VERSION } from '../src/core/db';
 import { applyPulled, buildChanges, snapshotAll } from '../src/core/sync';
 
 const { openTestDb } = require('./helpers/fakeSqlite');
@@ -22,21 +22,28 @@ describe('migrations', () => {
     expect((await db.getFirstAsync('PRAGMA user_version')).user_version).toBe(SCHEMA_VERSION);
   });
 
-  test('v1 → v2 renames day plans to date ids and keeps their items attached', async () => {
+  test('v1 → current renames day plans to date ids and keeps their items attached', async () => {
     const db = openTestDb();
-    // Build a v1 database by hand, as Phase 1 shipped it.
+    // A database exactly as Phase 1 shipped it, with one legacy random-id plan.
+    await db.execAsync(MIGRATIONS[1]);
     await db.execAsync(`
-      CREATE TABLE areas (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, color TEXT NOT NULL, icon TEXT NOT NULL DEFAULT 'circle', sort_order INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE day_plans (id TEXT PRIMARY KEY NOT NULL, date TEXT NOT NULL UNIQUE, system_preset TEXT NOT NULL, review_note TEXT NOT NULL DEFAULT '', mood INTEGER, closed_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      CREATE TABLE plan_items (id TEXT PRIMARY KEY NOT NULL, day_plan_id TEXT NOT NULL REFERENCES day_plans(id), task_id TEXT, ritual_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0, start_time TEXT, duration_minutes INTEGER, outcome TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-      INSERT INTO day_plans VALUES ('random123', '2026-10-19', 'top_three', '', NULL, NULL, 'x', 'x');
+      INSERT INTO day_plans (id, date, system_preset, created_at, updated_at) VALUES ('random123', '2026-10-19', 'top_three', 'x', 'x');
       INSERT INTO plan_items (id, day_plan_id, created_at, updated_at) VALUES ('item1', 'random123', 'x', 'x');
       PRAGMA user_version = 1;
     `);
     await initDb(db);
+    expect((await db.getFirstAsync('PRAGMA user_version')).user_version).toBe(SCHEMA_VERSION);
     expect(await db.getFirstAsync('SELECT id FROM day_plans')).toEqual({ id: 'dp-2026-10-19' });
     expect(await db.getFirstAsync('SELECT day_plan_id FROM plan_items')).toEqual({ day_plan_id: 'dp-2026-10-19' });
     expect(planId('2026-10-19')).toBe('dp-2026-10-19');
+  });
+
+  test('v3 adds recurring tasks, goal modes, subtasks, milestones and logs', async () => {
+    const db = await fresh();
+    const cols = async (t) => (await db.getAllAsync(`PRAGMA table_info(${t})`)).map((c) => c.name);
+    expect(await cols('tasks')).toEqual(expect.arrayContaining(['repeat', 'series_id']));
+    expect(await cols('goals')).toContain('progress_mode');
+    for (const t of ['subtasks', 'milestones', 'goal_logs']) expect((await cols(t)).length).toBeGreaterThan(3);
   });
 });
 

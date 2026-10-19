@@ -16,8 +16,8 @@ import { PARENTS, TABLES, getLocal, nowIso, setLocal, setTracking, syncColumns, 
 const K = { token: 'auth_token', email: 'account_email', cursor: 'sync_cursor', device: 'device_id', last: 'last_sync_at' };
 const PUSH_BATCH = 500;
 // Upserts parents-first, deletes children-first, so foreign keys always hold.
-const UPSERT_ORDER = ['areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings'];
-const DELETE_ORDER = ['plan_items', 'tasks', 'day_plans', 'rituals', 'goals', 'areas'];
+const UPSERT_ORDER = ['areas', 'goals', 'milestones', 'goal_logs', 'rituals', 'tasks', 'subtasks', 'day_plans', 'plan_items', 'settings'];
+const DELETE_ORDER = ['plan_items', 'subtasks', 'tasks', 'day_plans', 'rituals', 'goal_logs', 'milestones', 'goals', 'areas'];
 // Snapshot timestamp for settings that were never edited after signing in:
 // old enough that an account's existing settings win over this device's.
 const OLD = '2000-01-01T00:00:00.000Z';
@@ -150,7 +150,10 @@ export async function applyPulled(db, changes) {
       for (const c of all.filter((x) => x.tbl === tbl && x.deleted)) {
         const p = pending[`${tbl}:${c.id}`];
         if (p?.upsert) { stats.skipped += 1; continue; } // a local re-add is on its way up
-        if (tbl === 'tasks') await db.runAsync('DELETE FROM plan_items WHERE task_id = ?', [c.id]);
+        if (tbl === 'tasks') {
+          await db.runAsync('DELETE FROM plan_items WHERE task_id = ?', [c.id]);
+          await db.runAsync('DELETE FROM subtasks WHERE task_id = ?', [c.id]);
+        }
         await db.runAsync(`DELETE FROM ${tbl} WHERE id = ?`, [c.id]);
         stats.applied += 1;
       }

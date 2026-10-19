@@ -9,15 +9,16 @@ import { Moon, Plus, Settings2, Snowflake } from 'lucide-react-native';
 
 import { useStore } from '../../core/store';
 import { useDayPlan } from '../../core/useDayPlan';
-import { goalPct } from '../../core/useGoals';
+import { useGoals } from '../../core/useGoals';
+import { useTasks } from '../../core/useTasks';
 import { colors, space } from '../../core/theme';
 import { prettyDate, shortDate } from '../../core/dates';
-import { brokenLine, fmtNum, overcommitLine, tasksLeftLine } from '../../core/copy';
+import { brokenLine, fmtNum, milestoneLine, overcommitLine, paceLine, tasksLeftLine } from '../../core/copy';
 import { showBrokenNote, weekDots } from '../../core/logic/streak';
 import { areaWeek } from '../../core/logic/insights';
 import { WeekDots } from '../../components/WeekMark';
 import { Button, Card, Icon, Kicker, Press, Screen, T, haptic } from '../../components/ui';
-import { EmptyNote, PlanRow, ProgressBar, Ring, SectionTitle } from '../../components/parts';
+import { EmptyNote, PlanRow, ProgressBar, Ring, SectionTitle, Toast } from '../../components/parts';
 import { ActualSheet, CaptureFab, QuickCapture, TaskSheet } from '../../components/sheets';
 
 export default function Today() {
@@ -28,6 +29,10 @@ export default function Today() {
   const [capture, setCapture] = useState(null); // null | 'backlog' | 'today'
   const [actualFor, setActualFor] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [toast, setToast] = useState(null);
+  const { statsOf } = useGoals();
+  const { overdue } = useTasks();
+  const focus = statsOf(focusGoal);
 
   const dots = useMemo(() => weekDots(streak, litDates, today, settings.first_day), [streak, litDates, today, settings.first_day]);
   const rings = useMemo(
@@ -41,7 +46,8 @@ export default function Today() {
   const toggle = async (item) => {
     const next = item.outcome === 'done' ? 'pending' : 'done';
     if (next === 'done') haptic();
-    await day.setOutcome(item.id, next);
+    const crossed = await day.setOutcome(item.id, next);
+    if (crossed) setToast(milestoneLine(crossed.pct, crossed.goal));
     if (next === 'done' && item.task) setActualFor(item.task);
   };
 
@@ -99,6 +105,16 @@ export default function Today() {
           </Card>
         ) : null}
 
+        {overdue.length ? (
+          <Press onPress={() => router.push('/backlog')} scaleTo={0.98} style={{ marginTop: space.md }}>
+            <Card tone="elevated">
+              <T>
+                {overdue.length === 1 ? 'One task is' : `${overdue.length} tasks are`} past {overdue.length === 1 ? 'its' : 'their'} date. Plan it in, or move the date.
+              </T>
+            </Card>
+          </Press>
+        ) : null}
+
         {/* Focus Goal — the loudest thing on screen */}
         <Press onPress={() => router.push('/goals')} scaleTo={0.98} style={{ marginTop: space.md }}>
           {focusGoal ? (
@@ -106,14 +122,18 @@ export default function Today() {
               <Kicker style={{ color: colors.sunbeam }}>Focus goal</Kicker>
               <T v="h2" style={{ fontSize: 22, lineHeight: 28 }}>{focusGoal.title}</T>
               <View style={{ marginTop: space.md }}>
-                <ProgressBar pct={goalPct(focusGoal)} height={18} />
+                <ProgressBar pct={focus.progress.pct} height={18} />
               </View>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: space.sm }}>
                 <T v="data" style={{ color: colors.cloud }}>
-                  {fmtNum(focusGoal.current_value)} / {fmtNum(focusGoal.target_value)} {focusGoal.unit}
+                  {fmtNum(focus.progress.current)} / {fmtNum(focus.progress.target)} {focus.progress.unit}
                 </T>
-                <T v="data" style={{ color: colors.sunbeam }}>{goalPct(focusGoal)}%</T>
+                <T v="data" style={{ color: colors.sunbeam }}>{focus.progress.pct}%</T>
               </View>
+              {focus.nextMilestone ? (
+                <T v="caption" style={{ marginTop: space.sm }}>Next checkpoint: {focus.nextMilestone.title}</T>
+              ) : null}
+              {focus.pace ? <T v="caption" style={{ marginTop: 2 }}>{paceLine(focusGoal, focus.progress, focus.pace)}</T> : null}
             </Card>
           ) : (
             <Card style={{ borderWidth: 2, borderColor: colors.line, borderStyle: 'dashed' }}>
@@ -169,6 +189,7 @@ export default function Today() {
         ) : null}
       </Screen>
 
+      <Toast message={toast} onDone={() => setToast(null)} />
       <CaptureFab onPress={() => setCapture('backlog')} />
       <QuickCapture
         visible={!!capture}

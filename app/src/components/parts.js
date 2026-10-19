@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from 'react';
 import { Animated, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Svg, { Circle } from 'react-native-svg';
-import { Check, ChevronDown, ChevronUp, Clock, Repeat, X } from 'lucide-react-native';
+import { Check, ChevronDown, ChevronUp, Clock, ListChecks, Repeat, RotateCw, X } from 'lucide-react-native';
 
 import { colors, fonts, radius, space, type } from '../core/theme';
 import { formatClock, formatDuration, parseTime } from '../core/dates';
+import { dueBadge } from '../core/logic/deadlines';
+import { useStore } from '../core/store';
 import { Icon, NATIVE_DRIVER, Press, T, haptic } from './ui';
 
 // F6.4 — the Focus Goal bar. The loudest element on screen.
@@ -96,6 +98,40 @@ export function AreaDot({ area, size = 10 }) {
   return <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: area?.color || colors.muted }} />;
 }
 
+// F2.9 — a deadline as a small fact. Blush only once it has passed.
+const TONE = { over: colors.blush, soon: colors.sunbeam, later: colors.muted };
+export function DueBadge({ task }) {
+  const { today } = useStore();
+  const b = task ? dueBadge(task, today) : null;
+  if (!b) return null;
+  return <T v="caption" style={{ color: TONE[b.tone], fontFamily: fonts.bodyBold }}>{b.text}</T>;
+}
+
+// Repeat + subtask progress, shown wherever a task appears.
+export function TaskMeta({ task }) {
+  const { subtasksByTask } = useStore();
+  if (!task) return null;
+  const subs = subtasksByTask[task.id] || [];
+  const done = subs.filter((x) => x.done).length;
+  return (
+    <>
+      <DueBadge task={task} />
+      {task.repeat && task.repeat !== 'none' ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+          <Icon as={RotateCw} size={11} color={colors.muted} />
+          <T v="caption">{task.repeat}</T>
+        </View>
+      ) : null}
+      {subs.length ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+          <Icon as={ListChecks} size={12} color={done === subs.length ? colors.lagoon : colors.muted} />
+          <Text style={[type.data, { fontSize: 11, color: done === subs.length ? colors.lagoon : colors.muted }]}>{done}/{subs.length}</Text>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
 // One row in a day plan.
 export function PlanRow({ item, showTime, onToggle, onPress, onMove, onRemove, mode = 'day', outcome }) {
   const done = (outcome ?? item.outcome) === 'done';
@@ -136,6 +172,7 @@ export function PlanRow({ item, showTime, onToggle, onPress, onMove, onRemove, m
             </View>
           ) : null}
           {item.task?.deferral_count >= 3 ? <T v="caption" style={{ color: colors.blush }}>pushed {item.task.deferral_count}×</T> : null}
+          {item.task && mode !== 'close' ? <TaskMeta task={item.task} /> : null}
         </View>
       </View>
       <Text style={[type.data, { fontSize: 13 }]}>{formatDuration(item.minutes)}</Text>

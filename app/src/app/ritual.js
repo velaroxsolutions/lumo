@@ -12,14 +12,14 @@ import { Clock, Plus, Sparkles, X } from 'lucide-react-native';
 import { useStore } from '../core/store';
 import { useDayPlan } from '../core/useDayPlan';
 import { useTasks } from '../core/useTasks';
-import { goalPct } from '../core/useGoals';
+import { useGoals } from '../core/useGoals';
 import { colors, radius, space } from '../core/theme';
 import { formatClock, formatDuration, formatTime, parseTime, prettyDate, shortDay } from '../core/dates';
 import { MOODS, dayCloseLine, fmtNum, numWord, overcommitLine, reviewPrompt } from '../core/copy';
 import { weekDots } from '../core/logic/streak';
 import { WeekDots } from '../components/WeekMark';
 import { Button, Card, Chip, Field, Icon, Kicker, NATIVE_DRIVER, Press, Screen, Segmented, Stepper, T, haptic } from '../components/ui';
-import { AreaDot, EmptyNote, PlanRow, ProgressBar, Sheet, Toast, rowStyles } from '../components/parts';
+import { AreaDot, EmptyNote, PlanRow, ProgressBar, Sheet, TaskMeta, Toast, rowStyles } from '../components/parts';
 
 const STEPS = ['Close', 'Review', 'Plan', 'Light'];
 
@@ -250,6 +250,9 @@ function PlanStep({ date }) {
               <Press key={t.id} onPress={() => addFromBacklog(t.id)} scaleTo={0.98} style={[rowStyles.row, { paddingVertical: 11 }]}>
                 <View style={{ flex: 1 }}>
                   <T v="emphasis" numberOfLines={2}>{t.title}</T>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    <TaskMeta task={t} />
+                  </View>
                   {t.deferral_count >= 3 ? (
                     <T v="caption" style={{ color: colors.blush }}>Pushed {t.deferral_count} times — reschedule, shrink, or drop it?</T>
                   ) : null}
@@ -292,6 +295,8 @@ function TimeSheet({ item, onClose, onSave }) {
 // streak number pops, the Focus Goal bar shows where it stands. < 1s.
 function LightStep({ date }) {
   const { streak, litDates, settings, focusGoal } = useStore();
+  const { statsOf } = useGoals();
+  const focus = statsOf(focusGoal)?.progress;
   const day = useDayPlan(date);
   const tomorrow = useDayPlan(day.tomorrow);
   const dots = useMemo(() => weekDots(streak, litDates, date, settings.first_day), [streak, litDates, date, settings.first_day]);
@@ -334,10 +339,10 @@ function LightStep({ date }) {
             <Kicker style={{ color: colors.sunbeam }}>Focus goal</Kicker>
             <T v="emphasis">{focusGoal.title}</T>
             <View style={{ marginTop: space.md }}>
-              <ProgressBar pct={goalPct(focusGoal)} />
+              <ProgressBar pct={focus.pct} />
             </View>
             <T v="data" style={{ marginTop: space.sm, color: colors.cloud }}>
-              {fmtNum(focusGoal.current_value)} / {fmtNum(focusGoal.target_value)} {focusGoal.unit}
+              {fmtNum(focus.current)} / {fmtNum(focus.target)} {focus.unit}
             </T>
           </Card>
         ) : null}

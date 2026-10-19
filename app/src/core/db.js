@@ -7,9 +7,9 @@
 // IDs are random text and every row carries updated_at, so v2 sync can do
 // last-write-wins per row without reshaping anything.
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
-const MIGRATIONS = {
+export const MIGRATIONS = {
   1: `
     CREATE TABLE IF NOT EXISTS areas (
       id TEXT PRIMARY KEY NOT NULL,
@@ -114,6 +114,43 @@ const MIGRATIONS = {
       WHERE day_plan_id NOT LIKE 'dp-%';
     UPDATE day_plans SET id = 'dp-' || date WHERE id NOT LIKE 'dp-%';
   `,
+  // v3 — goals & tasks v2: recurring tasks (F2.8), subtasks (F2.7), goal
+  // progress from linked tasks (F1.5), milestones (F1.6), and a progress log
+  // that goal pace (F7.7) projects from.
+  3: `
+    ALTER TABLE tasks ADD COLUMN repeat TEXT NOT NULL DEFAULT 'none';
+    ALTER TABLE tasks ADD COLUMN series_id TEXT;
+    ALTER TABLE goals ADD COLUMN progress_mode TEXT NOT NULL DEFAULT 'manual';
+    CREATE TABLE IF NOT EXISTS subtasks (
+      id TEXT PRIMARY KEY NOT NULL,
+      task_id TEXT NOT NULL REFERENCES tasks(id),
+      title TEXT NOT NULL,
+      done INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_subtasks_task ON subtasks(task_id);
+    CREATE TABLE IF NOT EXISTS milestones (
+      id TEXT PRIMARY KEY NOT NULL,
+      goal_id TEXT NOT NULL REFERENCES goals(id),
+      title TEXT NOT NULL,
+      target_value REAL,
+      done INTEGER NOT NULL DEFAULT 0,
+      done_at TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS goal_logs (
+      id TEXT PRIMARY KEY NOT NULL,
+      goal_id TEXT NOT NULL REFERENCES goals(id),
+      value REAL NOT NULL,
+      logged_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
 };
 
 export async function initDb(db) {
@@ -140,7 +177,9 @@ export async function initDb(db) {
   });
 }
 
-export const TABLES = ['areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings'];
+export const TABLES = [
+  'areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings', 'subtasks', 'milestones', 'goal_logs',
+];
 
 // Deterministic ids for rows two devices might both create for the same day.
 export const planId = (date) => `dp-${date}`;
@@ -187,6 +226,9 @@ const ORDER = {
   day_plans: 'date',
   plan_items: 'sort_order, created_at',
   settings: 'key',
+  subtasks: 'sort_order, created_at',
+  milestones: 'sort_order, created_at',
+  goal_logs: 'logged_at',
 };
 
 export async function loadTable(db, table) {
@@ -205,11 +247,14 @@ export const nowIso = () => new Date().toISOString();
 // keep them checked anyway: bindings carry values, not identifiers.
 const COLUMNS = {
   areas: ['name', 'color', 'icon', 'sort_order', 'archived'],
-  goals: ['area_id', 'title', 'target_value', 'current_value', 'unit', 'deadline', 'is_focus', 'status', 'completed_at'],
+  goals: ['area_id', 'title', 'target_value', 'current_value', 'unit', 'deadline', 'is_focus', 'status', 'completed_at', 'progress_mode'],
   rituals: ['area_id', 'name', 'weekday_mask', 'start_time', 'duration_minutes', 'active'],
-  tasks: ['area_id', 'goal_id', 'title', 'notes', 'estimated_minutes', 'actual_minutes', 'priority', 'deadline', 'status', 'deferral_count', 'completed_at'],
+  tasks: ['area_id', 'goal_id', 'title', 'notes', 'estimated_minutes', 'actual_minutes', 'priority', 'deadline', 'status', 'deferral_count', 'completed_at', 'repeat', 'series_id'],
   day_plans: ['date', 'system_preset', 'review_note', 'mood', 'closed_at'],
   plan_items: ['day_plan_id', 'task_id', 'ritual_id', 'sort_order', 'start_time', 'duration_minutes', 'outcome'],
+  subtasks: ['task_id', 'title', 'done', 'sort_order'],
+  milestones: ['goal_id', 'title', 'target_value', 'done', 'done_at', 'sort_order'],
+  goal_logs: ['goal_id', 'value', 'logged_at'],
 };
 
 function checkCols(table, obj) {
@@ -280,4 +325,7 @@ export const PARENTS = {
   rituals: [['area_id', 'areas']],
   tasks: [['area_id', 'areas'], ['goal_id', 'goals']],
   plan_items: [['day_plan_id', 'day_plans'], ['task_id', 'tasks'], ['ritual_id', 'rituals']],
+  subtasks: [['task_id', 'tasks']],
+  milestones: [['goal_id', 'goals']],
+  goal_logs: [['goal_id', 'goals']],
 };

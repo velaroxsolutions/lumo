@@ -28,4 +28,7 @@ MAX_TEXT_LEN = 10_000
 CLOCK_SKEW_SECONDS = 120
 
 # The tables the app syncs. Anything else is rejected.
-SYNC_TABLES = ("areas", "goals", "rituals", "tasks", "day_plans", "plan_items", "settings")
+SYNC_TABLES = (
+    "areas", "goals", "rituals", "tasks", "day_plans", "plan_items", "settings",
+    "subtasks", "milestones", "goal_logs",
+)

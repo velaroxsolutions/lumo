@@ -8,7 +8,7 @@ import { colors, space } from '../../core/theme';
 import { formatDuration } from '../../core/dates';
 import { EMPTY_BACKLOG } from '../../core/copy';
 import { Kicker, Press, Screen, T } from '../../components/ui';
-import { AreaDot, EmptyNote, rowStyles } from '../../components/parts';
+import { AreaDot, EmptyNote, TaskMeta, rowStyles } from '../../components/parts';
 import { CaptureFab, QuickCapture, TaskSheet } from '../../components/sheets';
 
 const PRIO_COLOR = { high: colors.sunbeam, med: null, low: colors.muted };
@@ -43,6 +43,9 @@ export default function Backlog() {
                   <View style={{ flex: 1 }}>
                     <T v="emphasis" numberOfLines={2}>{t.title}</T>
                     {t.notes ? <T v="caption" numberOfLines={1}>{t.notes}</T> : null}
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+                      <TaskMeta task={t} />
+                    </View>
                   </View>
                   <T v="data" style={{ fontSize: 13 }}>{formatDuration(t.estimated_minutes)}</T>
                 </Press>

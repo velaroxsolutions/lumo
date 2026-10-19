@@ -10,11 +10,13 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { AppState } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
-import { TABLES, insert, loadTable, nowIso, planId as planIdFor, planItemId, remove, removeWhere, setSetting, update } from './db';
+import { TABLES, insert, loadTable, nowIso, planId as planIdFor, planItemId, remove, removeWhere, setSetting, uid, update } from './db';
 import { createSync } from './sync';
 import { addDays, todayKey } from './dates';
 import { getSystem, DEFAULT_SYSTEM } from './systems';
 import { autoTimes, ritualsForDate } from './logic/plan';
+import { nextDue, occurrenceId } from './logic/recurrence';
+import { historyOf, pace, progressOf } from './logic/goals';
 import { computeStreak } from './logic/streak';
 
 export const DEFAULT_SETTINGS = {
@@ -115,7 +117,79 @@ export function StoreProvider({ children }) {
         duration_minutes: r.duration_minutes,
       });
     }
+    // F2.8 — recurring tasks due that day are placed automatically.
+    const due = await db.getAllAsync(
+      "SELECT id FROM tasks WHERE status = 'backlog' AND repeat != 'none' AND deadline = ?",
+      [date],
+    );
+    for (const t of due) await addTaskToPlan(date, t.id);
     return planId;
+  };
+
+  // F2.8 — finishing (or letting go of) a recurring task spawns the next
+  // occurrence. Its id is derived from the series and due date, so two
+  // devices completing the same occurrence create one next task, not two.
+  const spawnNext = async (taskId, today) => {
+    const t = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    if (!t || !t.repeat || t.repeat === 'none') return null;
+    const due = nextDue(t.repeat, t.deadline, today);
+    const series = t.series_id || t.id;
+    const id = occurrenceId(series, due);
+    if (!(await db.getFirstAsync('SELECT 1 AS x FROM tasks WHERE id = ?', [id]))) {
+      await insert(db, 'tasks', {
+        id,
+        area_id: t.area_id,
+        goal_id: t.goal_id,
+        title: t.title,
+        notes: t.notes,
+        estimated_minutes: t.estimated_minutes,
+        priority: t.priority,
+        deadline: due,
+        status: 'backlog',
+        repeat: t.repeat,
+        series_id: series,
+      });
+    }
+    // The newest occurrence carries the series from here on.
+    await update(db, 'tasks', t.id, { repeat: 'none', series_id: series });
+    // If that day is already planned (and still open), it shows up there.
+    const plan = await db.getFirstAsync('SELECT closed_at FROM day_plans WHERE date = ?', [due]);
+    if (plan && !plan.closed_at) await addTaskToPlan(due, id);
+    return id;
+  };
+
+  // Un-ticking a recurring task takes back the occurrence it spawned, as long
+  // as nothing has happened to that occurrence yet.
+  const unspawn = async (taskId) => {
+    const t = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    if (!t?.series_id || !t.completed_at) return;
+    const next = await db.getFirstAsync(
+      `SELECT * FROM tasks WHERE series_id = ? AND id != ? AND repeat != 'none'
+       AND status IN ('backlog', 'planned') AND actual_minutes IS NULL AND created_at >= ?`,
+      [t.series_id, t.id, t.completed_at],
+    );
+    if (!next) return;
+    await removeWhere(db, 'plan_items', 'task_id = ?', [next.id]);
+    await remove(db, 'tasks', next.id);
+    await update(db, 'tasks', t.id, { repeat: next.repeat });
+  };
+
+  // A recurring task due today (or on any day that's already planned and
+  // still open) goes straight into that day's plan.
+  const placeIfDue = async (taskId) => {
+    const t = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    if (!t || t.repeat === 'none' || !t.deadline || t.status !== 'backlog') return;
+    const plan = await db.getFirstAsync('SELECT closed_at FROM day_plans WHERE date = ?', [t.deadline]);
+    if (plan ? !plan.closed_at : t.deadline === todayKey()) await addTaskToPlan(t.deadline, t.id);
+  };
+
+  // Progress % of a task-driven goal, for milestone celebrations (F6.6).
+  const taskGoalPct = async (goalId) => {
+    const r = await db.getFirstAsync(
+      "SELECT SUM(status = 'done') AS done, COUNT(*) AS n FROM tasks WHERE goal_id = ? AND status != 'dropped'",
+      [goalId],
+    );
+    return r?.n ? (r.done / r.n) * 100 : 0;
   };
 
   const nextOrder = async (planId) => {
@@ -240,9 +314,8 @@ export function StoreProvider({ children }) {
             ids.push(await insert(db, 'areas', { name: a.name, color: a.color, icon: a.icon || 'circle', sort_order: order++ }));
           }
           if (goal && goal.title) {
-            const areaId = ids[goal.areaIndex ?? 0] ?? ids[0];
-            await insert(db, 'goals', {
-              area_id: areaId,
+            const goalId = await insert(db, 'goals', {
+              area_id: ids[goal.areaIndex ?? 0] ?? ids[0],
               title: goal.title,
               target_value: goal.target_value || 1,
               current_value: 0,
@@ -250,6 +323,7 @@ export function StoreProvider({ children }) {
               deadline: goal.deadline || null,
               is_focus: 1,
             });
+            await insert(db, 'goal_logs', { goal_id: goalId, value: 0, logged_at: nowIso() });
           }
           await setSetting(db, 'system_preset', system);
           await setSetting(db, 'evening_reminder', eveningReminder || DEFAULT_SETTINGS.evening_reminder);
@@ -268,7 +342,7 @@ export function StoreProvider({ children }) {
       archiveArea: act(['areas'], (id, archived = true) => update(db, 'areas', id, { archived: archived ? 1 : 0 })),
 
       // Goals (F1.2/F1.3) — exactly one Focus Goal at a time.
-      addGoal: act(['goals'], async (g) => {
+      addGoal: act(['goals', 'goal_logs'], async (g) => {
         let id;
         await db.withTransactionAsync(async () => {
           if (g.is_focus) await clearFocus();
@@ -280,7 +354,9 @@ export function StoreProvider({ children }) {
             unit: g.unit || '',
             deadline: g.deadline || null,
             is_focus: g.is_focus ? 1 : 0,
+            progress_mode: g.progress_mode === 'tasks' ? 'tasks' : 'manual',
           });
+          await insert(db, 'goal_logs', { goal_id: id, value: g.current_value || 0, logged_at: nowIso() });
         });
         return id;
       }),
@@ -291,8 +367,9 @@ export function StoreProvider({ children }) {
           if (id) await update(db, 'goals', id, { is_focus: 1 });
         });
       }),
-      // Returns the highest milestone crossed (F6.6), or null.
-      setGoalProgress: act(['goals'], async (id, value) => {
+      // Returns { pct: highest 25/50/75/100 crossed or null (F6.6),
+      //           reached: titles of goal milestones just hit (F1.6) }.
+      setGoalProgress: act(['goals', 'goal_logs', 'milestones'], async (id, value) => {
         const g = await db.getFirstAsync('SELECT * FROM goals WHERE id = ?', [id]);
         if (!g) return null;
         const v = Math.max(0, Number(value) || 0);
@@ -304,9 +381,33 @@ export function StoreProvider({ children }) {
           patch.completed_at = nowIso();
         }
         await update(db, 'goals', id, patch);
+        await insert(db, 'goal_logs', { goal_id: id, value: v, logged_at: nowIso() });
+        const hit = await db.getAllAsync(
+          'SELECT id, title FROM milestones WHERE goal_id = ? AND done = 0 AND target_value IS NOT NULL AND target_value <= ?',
+          [id, v],
+        );
+        for (const m of hit) await update(db, 'milestones', m.id, { done: 1, done_at: nowIso() });
         const crossed = MILESTONES.filter((m) => before < m && after >= m);
-        return crossed.length ? crossed[crossed.length - 1] : null;
+        return { pct: crossed.length ? crossed[crossed.length - 1] : null, reached: hit.map((m) => m.title) };
       }),
+
+      // Milestones inside a goal (F1.6): checkpoints so long goals still produce wins.
+      addMilestone: act(['milestones'], async (goalId, { title, target_value }) => {
+        const n = await db.getFirstAsync('SELECT COUNT(*) AS n FROM milestones WHERE goal_id = ?', [goalId]);
+        return insert(db, 'milestones', {
+          goal_id: goalId,
+          title: title.trim(),
+          target_value: target_value == null || target_value === '' ? null : Number(target_value),
+          sort_order: n?.n ?? 0,
+        });
+      }),
+      toggleMilestone: act(['milestones'], async (id) => {
+        const m = await db.getFirstAsync('SELECT * FROM milestones WHERE id = ?', [id]);
+        if (!m) return null;
+        await update(db, 'milestones', id, m.done ? { done: 0, done_at: null } : { done: 1, done_at: nowIso() });
+        return m.done ? null : m.title;
+      }),
+      removeMilestone: act(['milestones'], (id) => remove(db, 'milestones', id)),
       setGoalStatus: act(['goals'], (id, status) =>
         update(db, 'goals', id, {
           status,
@@ -321,27 +422,56 @@ export function StoreProvider({ children }) {
 
       // Tasks (F2.1/F2.2).
       addTask: act(['tasks', 'day_plans', 'plan_items', 'settings'], async (t, opts = {}) => {
-        const id = await insert(db, 'tasks', {
+        const id = uid();
+        const repeat = t.repeat && t.repeat !== 'none' ? t.repeat : 'none';
+        await insert(db, 'tasks', {
+          id,
           area_id: t.area_id,
           goal_id: t.goal_id || null,
           title: t.title.trim(),
           notes: t.notes || '',
           estimated_minutes: t.estimated_minutes || 30,
           priority: t.priority || 'med',
-          deadline: t.deadline || null,
+          deadline: t.deadline || (repeat !== 'none' ? todayKey() : null),
           status: 'backlog',
+          repeat,
+          series_id: repeat !== 'none' ? id : null,
         });
         await setSetting(db, 'last_area_id', t.area_id);
         if (opts.planDate) await addTaskToPlan(opts.planDate, id);
+        else await placeIfDue(id);
         return id;
       }),
-      updateTask: act(['tasks'], (id, patch) => update(db, 'tasks', id, patch)),
-      deleteTask: act(['tasks', 'plan_items'], async (id) => {
+      updateTask: act(['tasks', 'day_plans', 'plan_items'], async (id, patch) => {
+        const t = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [id]);
+        if (!t) return;
+        const next = { ...patch };
+        // Turning a task into a series: it needs a series id and a first due date.
+        if (next.repeat && next.repeat !== 'none') {
+          if (!t.series_id) next.series_id = id;
+          if (!(next.deadline ?? t.deadline)) next.deadline = todayKey();
+        }
+        await update(db, 'tasks', id, next);
+        await placeIfDue(id);
+      }),
+      deleteTask: act(['tasks', 'plan_items', 'subtasks'], async (id) => {
         await db.withTransactionAsync(async () => {
           await removeWhere(db, 'plan_items', 'task_id = ?', [id]);
+          await removeWhere(db, 'subtasks', 'task_id = ?', [id]);
           await remove(db, 'tasks', id);
         });
       }),
+
+      // Subtasks (F2.7) — one level deep, a checklist inside a task.
+      addSubtask: act(['subtasks'], async (taskId, title) => {
+        const n = await db.getFirstAsync('SELECT COUNT(*) AS n FROM subtasks WHERE task_id = ?', [taskId]);
+        return insert(db, 'subtasks', { task_id: taskId, title: title.trim(), sort_order: n?.n ?? 0 });
+      }),
+      toggleSubtask: act(['subtasks'], async (id) => {
+        const st = await db.getFirstAsync('SELECT done FROM subtasks WHERE id = ?', [id]);
+        if (st) await update(db, 'subtasks', id, { done: st.done ? 0 : 1 });
+      }),
+      removeSubtask: act(['subtasks'], (id) => remove(db, 'subtasks', id)),
       setActual: act(['tasks'], (taskId, minutes) =>
         update(db, 'tasks', taskId, { actual_minutes: minutes == null ? null : Math.round(minutes) }),
       ),
@@ -404,16 +534,27 @@ export function StoreProvider({ children }) {
       }),
 
       // Ticking a task off during the day.
-      setItemOutcome: act(['plan_items', 'tasks'], async (itemId, outcome) => {
+      // Returns { goal, pct } when a task-driven goal crosses 25/50/75/100%.
+      setItemOutcome: act(['plan_items', 'tasks', 'day_plans'], async (itemId, outcome) => {
         const it = await db.getFirstAsync('SELECT * FROM plan_items WHERE id = ?', [itemId]);
-        if (!it) return;
+        if (!it) return null;
+        const task = it.task_id ? await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [it.task_id]) : null;
+        const goal = task?.goal_id ? await db.getFirstAsync('SELECT * FROM goals WHERE id = ?', [task.goal_id]) : null;
+        const tracked = goal?.progress_mode === 'tasks';
+        const before = tracked ? await taskGoalPct(goal.id) : 0;
         await update(db, 'plan_items', itemId, { outcome });
-        if (it.task_id) {
-          await update(db, 'tasks', it.task_id,
-            outcome === 'done'
-              ? { status: 'done', completed_at: nowIso() }
-              : { status: 'planned', completed_at: null });
+        if (!task) return null;
+        if (outcome === 'done') {
+          await update(db, 'tasks', task.id, { status: 'done', completed_at: nowIso() });
+          await spawnNext(task.id, todayKey());
+        } else {
+          await unspawn(task.id);
+          await update(db, 'tasks', task.id, { status: 'planned', completed_at: null });
         }
+        if (!tracked) return null;
+        const after = await taskGoalPct(goal.id);
+        const crossed = MILESTONES.filter((m) => before < m && after >= m);
+        return crossed.length ? { goal: goal.title, pct: crossed[crossed.length - 1] } : null;
       }),
 
       // Evening ritual, step 1: record outcomes and handle what's unfinished.
@@ -436,6 +577,7 @@ export function StoreProvider({ children }) {
               });
               // Undo a carry-forward made by an earlier pass.
               await removeWhere(db, 'plan_items', LATER_PENDING, [it.task_id, date]);
+              await spawnNext(it.task_id, date);
               continue;
             }
             const task = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [it.task_id]);
@@ -450,6 +592,8 @@ export function StoreProvider({ children }) {
                 completed_at: null,
                 deferral_count: deferrals,
               });
+              // Letting go of one occurrence doesn't end the series.
+              if (unfinished === 'drop') await spawnNext(it.task_id, date);
             }
           }
           await ensurePlan(tomorrow);
@@ -482,6 +626,27 @@ export function StoreProvider({ children }) {
     const itemsByPlan = {};
     for (const it of data.plan_items) (itemsByPlan[it.day_plan_id] ||= []).push(it);
     const litDates = data.day_plans.filter((p) => p.closed_at).map((p) => p.date);
+    const group = (rows, key) => {
+      const out = {};
+      for (const r of rows) (out[r[key]] ||= []).push(r);
+      return out;
+    };
+    const tasksByGoal = group(data.tasks.filter((t) => t.goal_id), 'goal_id');
+    const milestonesByGoal = group(data.milestones, 'goal_id');
+    const logsByGoal = group(data.goal_logs, 'goal_id');
+    // Progress, pace and next milestone for every goal, computed once.
+    const goalStats = {};
+    for (const g of data.goals) {
+      const linked = tasksByGoal[g.id] || [];
+      const progress = progressOf(g, linked);
+      const ms = milestonesByGoal[g.id] || [];
+      goalStats[g.id] = {
+        progress,
+        pace: g.status === 'active' ? pace(g, progress, historyOf(g, logsByGoal[g.id], linked), today) : null,
+        milestones: ms,
+        nextMilestone: ms.find((m) => !m.done) || null,
+      };
+    }
 
     return {
       today,
@@ -495,8 +660,11 @@ export function StoreProvider({ children }) {
       focusGoal: data.goals.find((g) => g.is_focus && g.status === 'active') || null,
       rituals: data.rituals,
       ritualsById: byId(data.rituals),
+      goalStats,
       tasks: data.tasks,
       tasksById: byId(data.tasks),
+      tasksByGoal,
+      subtasksByTask: group(data.subtasks, 'task_id'),
       plans: data.day_plans,
       plansByDate: Object.fromEntries(data.day_plans.map((p) => [p.date, p])),
       itemsByPlan,

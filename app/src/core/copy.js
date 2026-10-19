@@ -1,7 +1,7 @@
 // Voice: encouraging, never babying. Specific numbers over adjectives.
 // No "Yay", no guilt, no comparison to other users, at most one emoji (we use none).
 
-import { formatDuration } from './dates';
+import { formatDuration, shortDate } from './dates';
 
 const WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten', 'Eleven', 'Twelve'];
 export const numWord = (n) => (n >= 0 && n < WORDS.length ? WORDS[n] : String(n));
@@ -61,6 +61,16 @@ export function milestoneLine(pct, goalTitle) {
   return `${pct}% of the way to ${goalTitle}. Keep stacking.`;
 }
 
+// F7.7 — pace is an estimate; say so, and never scold.
+export function paceLine(goal, progress, p) {
+  const when = shortDate(p.finish);
+  const what = `${fmtNum(progress.target)} ${progress.unit}`.trim();
+  if (p.onTrack === false) return `At this pace you hit ${what} around ${when} — after your ${shortDate(goal.deadline)} date. Pick up the pace or move the date?`;
+  return `At this pace you hit ${what} around ${when}.`;
+}
+
 export const MOODS = ['Drained', 'Low', 'Okay', 'Good', 'Great'];
 
-export const fmtNum = (n) => (Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10));
+export function fmtNum(n) {
+  return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
+}
