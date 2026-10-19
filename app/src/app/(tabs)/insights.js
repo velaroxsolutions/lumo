@@ -10,7 +10,9 @@ import { colors, radius, space, type } from '../../core/theme';
 import { formatDuration, shortDate, shortDay } from '../../core/dates';
 import { MOODS, numWord } from '../../core/copy';
 import { MIN_ACCURACY_SAMPLES, TIME_BLOCKS, areaWeek, completionSeries, estimateAccuracy, finishTimes, moodAverage, moodVsCompletion, personalBests } from '../../core/logic/insights';
-import { Card, Kicker, Screen, Segmented, T } from '../../components/ui';
+import { Button, Card, Kicker, Screen, Segmented, T } from '../../components/ui';
+import { ShareSheet } from '../../components/ShareCard';
+import { Share2 } from 'lucide-react-native';
 import { SectionTitle } from '../../components/parts';
 
 const CHART_H = 120;
@@ -19,6 +21,7 @@ export default function Insights() {
   const s = useStore();
   const { today, streak } = s;
   const [days, setDays] = useState(28);
+  const [sharing, setSharing] = useState(false);
 
   const series = useMemo(() => completionSeries(s.plans, s.itemsByPlan, today, days), [s.plans, s.itemsByPlan, today, days]);
   const week = useMemo(
@@ -40,7 +43,11 @@ export default function Insights() {
   return (
     <Screen>
       <Kicker>You vs. you</Kicker>
-      <T v="h1">Insights</T>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <T v="h1">Insights</T>
+        <Button small kind="secondary" icon={Share2} title="Share streak" onPress={() => setSharing(true)} />
+      </View>
+      <ShareSheet visible={sharing} onClose={() => setSharing(false)} />
 
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.lg }}>
         <Stat label="Current streak" value={`${streak.current}d`} />

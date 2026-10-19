@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Animated, Pressable, View } from 'react-native';
 import { router } from 'expo-router';
-import { Clock, Plus, Sparkles, X } from 'lucide-react-native';
+import { Clock, Plus, Share2, Sparkles, X } from 'lucide-react-native';
 
 import { useStore } from '../core/store';
 import { useDayPlan } from '../core/useDayPlan';
@@ -19,6 +19,7 @@ import { formatClock, formatDuration, formatTime, parseTime, prettyDate, shortDa
 import { MOODS, dayCloseLine, fmtNum, numWord, overcommitLine, reviewPrompt } from '../core/copy';
 import { weekDots } from '../core/logic/streak';
 import { WeekDots } from '../components/WeekMark';
+import { ShareSheet } from '../components/ShareCard';
 import { Button, Card, Chip, Field, Icon, Kicker, NATIVE_DRIVER, Press, Screen, Segmented, Stepper, T, haptic } from '../components/ui';
 import { AreaDot, EmptyNote, PlanRow, ProgressBar, Sheet, TaskMeta, Toast, rowStyles } from '../components/parts';
 
@@ -338,6 +339,7 @@ function LightStep({ date }) {
   const tomorrow = useDayPlan(day.tomorrow);
   const dots = useMemo(() => weekDots(streak, litDates, date, settings.first_day), [streak, litDates, date, settings.first_day]);
   const [go, setGo] = useState(0);
+  const [sharing, setSharing] = useState(false);
   const pop = useState(() => new Animated.Value(0))[0];
   const line = useState(() => new Animated.Value(0))[0];
 
@@ -371,6 +373,9 @@ function LightStep({ date }) {
         <T style={{ color: colors.muted, marginTop: space.sm }}>
           {tomorrow.items.length} on tomorrow · {formatDuration(tomorrow.load)}
         </T>
+        {streak.current >= 2 ? (
+          <Button small kind="ghost" icon={Share2} title="Share the streak" onPress={() => setSharing(true)} style={{ marginTop: space.md }} />
+        ) : null}
         {focusGoal ? (
           <Card style={{ marginTop: space.xl, width: '100%', borderRadius: radius.lg }}>
             <Kicker style={{ color: colors.sunbeam }}>Focus goal</Kicker>
@@ -384,6 +389,7 @@ function LightStep({ date }) {
           </Card>
         ) : null}
       </Animated.View>
+      <ShareSheet visible={sharing} onClose={() => setSharing(false)} />
     </View>
   );
 }
