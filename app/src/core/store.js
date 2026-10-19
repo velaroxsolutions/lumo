@@ -10,7 +10,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { AppState } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
-import { TABLES, insert, loadTable, nowIso, setSetting, update } from './db';
+import { TABLES, insert, loadTable, nowIso, planId as planIdFor, planItemId, remove, removeWhere, setSetting, update } from './db';
+import { createSync } from './sync';
 import { addDays, todayKey } from './dates';
 import { getSystem, DEFAULT_SYSTEM } from './systems';
 import { autoTimes, ritualsForDate } from './logic/plan';
@@ -29,6 +30,10 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const MILESTONES = [25, 50, 75, 100];
+
+// A task's still-pending slots on days after `date` (used to undo a carry-forward).
+const LATER_PENDING = `task_id = ? AND outcome = 'pending'
+  AND day_plan_id IN (SELECT id FROM day_plans WHERE date > ?)`;
 
 const StoreContext = createContext(null);
 
@@ -63,6 +68,7 @@ export function StoreProvider({ children }) {
   const db = useSQLiteContext();
   const [data, setData] = useState(null);
   const [staleNote, setStaleNote] = useState(null);
+  const [account, setAccount] = useState({ ready: false, signedIn: false, state: 'idle', error: null });
   const today = useToday();
   // One serial write queue per provider.
   const [run] = useState(createWriteQueue);
@@ -76,6 +82,9 @@ export function StoreProvider({ children }) {
     [db],
   );
 
+  // Account + background sync (Phase 2). Never in the way of a local write.
+  const [engine] = useState(() => createSync({ db, run, reload, onStatus: setAccount }));
+
   // ---- internal helpers (run inside the queue) -----------------------------
 
   const getSettingRaw = async (key) => {
@@ -83,16 +92,22 @@ export function StoreProvider({ children }) {
     return row?.value ?? DEFAULT_SETTINGS[key];
   };
 
+  const clearFocus = async () => {
+    const rows = await db.getAllAsync('SELECT id FROM goals WHERE is_focus = 1');
+    for (const r of rows) await update(db, 'goals', r.id, { is_focus: 0 });
+  };
+
   const ensurePlan = async (date) => {
     const existing = await db.getFirstAsync('SELECT * FROM day_plans WHERE date = ?', [date]);
     if (existing) return existing.id;
     const preset = await getSettingRaw('system_preset');
-    const planId = await insert(db, 'day_plans', { date, system_preset: preset });
+    const planId = await insert(db, 'day_plans', { id: planIdFor(date), date, system_preset: preset });
     // F3.8 — rituals appear pre-placed on matching weekdays.
     const rituals = await db.getAllAsync('SELECT * FROM rituals WHERE active = 1');
     let order = 0;
     for (const r of ritualsForDate(rituals, date)) {
       await insert(db, 'plan_items', {
+        id: planItemId(date, { ritualId: r.id }),
         day_plan_id: planId,
         ritual_id: r.id,
         sort_order: order++,
@@ -119,6 +134,7 @@ export function StoreProvider({ children }) {
     );
     if (dup) return dup.id;
     const itemId = await insert(db, 'plan_items', {
+      id: planItemId(date, { taskId }),
       day_plan_id: planId,
       task_id: taskId,
       sort_order: await nextOrder(planId),
@@ -161,6 +177,18 @@ export function StoreProvider({ children }) {
 
   // ---- boot + day rollover --------------------------------------------------
 
+  // Declared first so it takes the queue before any boot-time write, which
+  // means change tracking is already on when the stale sweep runs.
+  useEffect(() => {
+    engine.init().then((signedIn) => signedIn && engine.syncNow());
+    const timer = setInterval(() => engine.syncNow(), 60 * 1000);
+    const sub = AppState.addEventListener('change', (st) => st === 'active' && engine.syncNow());
+    return () => {
+      clearInterval(timer);
+      sub.remove();
+    };
+  }, [engine]);
+
   useEffect(() => {
     let alive = true;
     run(async () => {
@@ -181,11 +209,23 @@ export function StoreProvider({ children }) {
       run(async () => {
         const result = await fn(...args);
         await reload(tables);
+        engine.poke();
         return result;
       });
 
     return {
       reload: () => run(() => reload()),
+
+      // Account (F12.2) and your data (F12.9).
+      signIn: (mode, email, password) => engine.signIn(mode, email, password),
+      signOut: () => engine.signOut(),
+      deleteAccount: (password) => engine.deleteAccount(password),
+      syncNow: () => engine.syncNow(),
+      exportData: () => run(async () => {
+        const out = { app: 'lumo', exported_at: nowIso(), data: {} };
+        for (const t of TABLES) out.data[t] = await loadTable(db, t);
+        return out;
+      }),
       dismissStaleNote: () => setStaleNote(null),
 
       updateSettings: act(['settings'], async (patch) => {
@@ -231,7 +271,7 @@ export function StoreProvider({ children }) {
       addGoal: act(['goals'], async (g) => {
         let id;
         await db.withTransactionAsync(async () => {
-          if (g.is_focus) await db.runAsync('UPDATE goals SET is_focus = 0, updated_at = ? WHERE is_focus = 1', [nowIso()]);
+          if (g.is_focus) await clearFocus();
           id = await insert(db, 'goals', {
             area_id: g.area_id,
             title: g.title,
@@ -247,7 +287,7 @@ export function StoreProvider({ children }) {
       updateGoal: act(['goals'], (id, patch) => update(db, 'goals', id, patch)),
       setFocus: act(['goals'], async (id) => {
         await db.withTransactionAsync(async () => {
-          await db.runAsync('UPDATE goals SET is_focus = 0, updated_at = ? WHERE is_focus = 1', [nowIso()]);
+          await clearFocus();
           if (id) await update(db, 'goals', id, { is_focus: 1 });
         });
       }),
@@ -298,8 +338,8 @@ export function StoreProvider({ children }) {
       updateTask: act(['tasks'], (id, patch) => update(db, 'tasks', id, patch)),
       deleteTask: act(['tasks', 'plan_items'], async (id) => {
         await db.withTransactionAsync(async () => {
-          await db.runAsync('DELETE FROM plan_items WHERE task_id = ?', [id]);
-          await db.runAsync('DELETE FROM tasks WHERE id = ?', [id]);
+          await removeWhere(db, 'plan_items', 'task_id = ?', [id]);
+          await remove(db, 'tasks', id);
         });
       }),
       setActual: act(['tasks'], (taskId, minutes) =>
@@ -324,7 +364,7 @@ export function StoreProvider({ children }) {
       unplanItem: act(['plan_items', 'tasks'], async (itemId) => {
         const it = await db.getFirstAsync('SELECT * FROM plan_items WHERE id = ?', [itemId]);
         if (!it) return;
-        await db.runAsync('DELETE FROM plan_items WHERE id = ?', [itemId]);
+        await remove(db, 'plan_items', itemId);
         if (it.task_id) await update(db, 'tasks', it.task_id, { status: 'backlog', completed_at: null });
       }),
       moveItem: act(['plan_items'], async (itemId, delta) => {
@@ -395,11 +435,7 @@ export function StoreProvider({ children }) {
                 completed_at: task?.completed_at || nowIso(),
               });
               // Undo a carry-forward made by an earlier pass.
-              await db.runAsync(
-                `DELETE FROM plan_items WHERE task_id = ? AND outcome = 'pending'
-                 AND day_plan_id IN (SELECT id FROM day_plans WHERE date > ?)`,
-                [it.task_id, date],
-              );
+              await removeWhere(db, 'plan_items', LATER_PENDING, [it.task_id, date]);
               continue;
             }
             const task = await db.getFirstAsync('SELECT * FROM tasks WHERE id = ?', [it.task_id]);
@@ -408,11 +444,7 @@ export function StoreProvider({ children }) {
               await addTaskToPlan(tomorrow, it.task_id);
               await update(db, 'tasks', it.task_id, { status: 'planned', completed_at: null, deferral_count: deferrals });
             } else {
-              await db.runAsync(
-                `DELETE FROM plan_items WHERE task_id = ? AND outcome = 'pending'
-                 AND day_plan_id IN (SELECT id FROM day_plans WHERE date > ?)`,
-                [it.task_id, date],
-              );
+              await removeWhere(db, 'plan_items', LATER_PENDING, [it.task_id, date]);
               await update(db, 'tasks', it.task_id, {
                 status: unfinished === 'drop' ? 'dropped' : 'backlog',
                 completed_at: null,
@@ -437,7 +469,7 @@ export function StoreProvider({ children }) {
       }),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db, reload, run]);
+  }, [db, reload, run, engine]);
 
   // ---- derived --------------------------------------------------------------
 
@@ -471,9 +503,10 @@ export function StoreProvider({ children }) {
       litDates,
       streak: computeStreak(litDates, today),
       staleNote,
+      account,
       actions,
     };
-  }, [data, today, staleNote, actions]);
+  }, [data, today, staleNote, account, actions]);
 
   if (!value) return null;
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

@@ -53,7 +53,8 @@
         {
           "color": "#FFC53D"
         }
-      ]
+      ],
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": false
