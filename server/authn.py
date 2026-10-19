@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 import config
 import db
+import notify
 
 ITERATIONS = 310_000
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -153,6 +154,81 @@ def delete_account(user_id: str, password: str):
         row = conn.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,)).fetchone()
         if not row or not verify_password(password or "", row["password_hash"]):
             raise AuthError(401, "Password is wrong.")
-        for table in ("records", "counters", "sessions"):
+        for table in ("records", "counters", "sessions", "password_resets"):
             conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
+# ---- password reset (email a 6-digit code) ---------------------------------
+
+RESET_TTL_MINUTES = 15
+RESET_MAX_ATTEMPTS = 5
+RESET_COOLDOWN_SECONDS = 60
+
+
+def _code_hash(user_id: str, code: str) -> str:
+    return hashlib.sha256(f"{user_id}:{code}".encode()).hexdigest()
+
+
+def request_reset(email: str) -> None:
+    """Always succeeds from the caller's point of view, whether or not the
+    email has an account — the response must not reveal that."""
+    email = normalize_email(email)
+    now = datetime.now(timezone.utc)
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    with db.tx() as conn:
+        user = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+        if not user:
+            return
+        prev = conn.execute("SELECT requested_at FROM password_resets WHERE user_id = ?", (user["id"],)).fetchone()
+        if prev:
+            last = datetime.fromisoformat(prev["requested_at"].replace("Z", "+00:00"))
+            if (now - last).total_seconds() < RESET_COOLDOWN_SECONDS:
+                return  # quietly ignore rapid repeats
+        expires = (now + timedelta(minutes=RESET_TTL_MINUTES)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        conn.execute(
+            "INSERT INTO password_resets (user_id, code_hash, expires_at, attempts, requested_at) VALUES (?, ?, ?, 0, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, "
+            "attempts = 0, requested_at = excluded.requested_at",
+            (user["id"], _code_hash(user["id"], code), expires, now_iso()),
+        )
+    notify.send(
+        email,
+        "Your lumo reset code",
+        f"Your lumo password reset code is {code}.\n\nIt works for {RESET_TTL_MINUTES} minutes. "
+        "If you didn't ask for this, you can ignore this email — your password hasn't changed.",
+    )
+
+
+def confirm_reset(email: str, code: str, new_password: str, device_id: str | None):
+    email = normalize_email(email)
+    if len(new_password or "") < MIN_PASSWORD:
+        raise AuthError(400, f"Use at least {MIN_PASSWORD} characters.")
+    # Decide inside the transaction, raise after it commits — otherwise the
+    # failed-attempt counter would roll back and the attempt limit would
+    # never bite.
+    outcome = "bad"
+    result = None
+    with db.tx() as conn:
+        user = conn.execute("SELECT id, email FROM users WHERE email = ?", (email,)).fetchone()
+        r = conn.execute("SELECT * FROM password_resets WHERE user_id = ?", (user["id"],)).fetchone() if user else None
+        if r:
+            expired = datetime.fromisoformat(r["expires_at"].replace("Z", "+00:00")) < datetime.now(timezone.utc)
+            if expired or r["attempts"] >= RESET_MAX_ATTEMPTS:
+                conn.execute("DELETE FROM password_resets WHERE user_id = ?", (user["id"],))
+                outcome = "expired"
+            elif not hmac.compare_digest(r["code_hash"], _code_hash(user["id"], (code or "").strip())):
+                conn.execute("UPDATE password_resets SET attempts = attempts + 1 WHERE user_id = ?", (user["id"],))
+            else:
+                conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), user["id"]))
+                conn.execute("DELETE FROM password_resets WHERE user_id = ?", (user["id"],))
+                # Every other device is signed out; this one gets a fresh session.
+                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+                token = _new_session(conn, user["id"], device_id)
+                result = {"token": token, "user": {"id": user["id"], "email": user["email"]}}
+                outcome = "ok"
+    if outcome == "expired":
+        raise AuthError(400, "That code has expired. Ask for a new one.")
+    if outcome != "ok":
+        raise AuthError(400, "That code didn't work. Check it, or ask for a new one.")
+    return result

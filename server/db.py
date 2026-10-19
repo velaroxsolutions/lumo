@@ -39,6 +39,14 @@ TABLES = {
         "seq": "INTEGER NOT NULL DEFAULT 0",
         "updated_at": "TEXT NOT NULL",
     },
+    # One live password-reset code per user, stored only as a hash.
+    "password_resets": {
+        "user_id": "TEXT PRIMARY KEY NOT NULL",
+        "code_hash": "TEXT NOT NULL",
+        "expires_at": "TEXT NOT NULL",
+        "attempts": "INTEGER NOT NULL DEFAULT 0",
+        "requested_at": "TEXT NOT NULL",
+    },
     # Per-user change counter; pull cursors are positions in this sequence.
     "counters": {
         "user_id": "TEXT PRIMARY KEY NOT NULL",

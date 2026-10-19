@@ -12,6 +12,10 @@ CORS_ORIGINS = [
     if o.strip()
 ]
 
+# Built web app (expo export) to serve from the same origin as the API.
+# Unset = API only.
+FRONTEND_DIST = os.environ.get("FRONTEND_DIST", "")
+
 # GET /admin/metrics is disabled (404) unless this is set.
 ADMIN_TOKEN = os.environ.get("LUMO_ADMIN_TOKEN", "")
 

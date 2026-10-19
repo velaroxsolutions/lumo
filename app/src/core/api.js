@@ -1,7 +1,10 @@
 // Thin fetch wrapper for the lumo sync server. Nothing in the UI waits on
 // this — sync runs in the background and the app works fully without it.
 
-export const API_URL = (process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+// 'same-origin' = the web build is served by the API server itself (see the
+// Dockerfile), so requests go to whatever origin loaded the page.
+const configured = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
+export const API_URL = configured === 'same-origin' ? '' : configured.replace(/\/$/, '');
 
 export class ApiError extends Error {
   constructor(status, message) {

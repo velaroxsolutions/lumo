@@ -245,20 +245,87 @@ export function createSync({ db, run, reload, onStatus }) {
     return inflight;
   }
 
-  async function signIn(mode, email, password) {
-    const path = mode === 'signup' ? '/auth/signup' : '/auth/login';
-    const res = await api(path, { method: 'POST', body: { email, password, device_id: account?.device } });
-    await run(async () => {
-      await db.runAsync('DELETE FROM sync_outbox');
-      await setLocal(db, K.token, res.token);
-      await setLocal(db, K.email, res.user.email);
-      await setLocal(db, K.cursor, 0);
-      setTracking(true);
-      await snapshotAll(db);
-    });
+  async function pullAll(token) {
+    const changes = [];
+    let cursor = 0;
+    for (;;) {
+      const page = await api(`/sync/pull?since=${cursor}&limit=500`, { token });
+      changes.push(...page.changes);
+      cursor = page.cursor;
+      if (!page.more) return { changes, cursor };
+    }
+  }
+
+  // Both this device and the account already hold plans: the user decides.
+  async function needsChoice(res) {
+    const onboarded = await run(() => db.getFirstAsync("SELECT value FROM settings WHERE key = 'onboarded'"));
+    if (onboarded?.value !== '1') return false;
+    const page = await api('/sync/pull?since=0&limit=1', { token: res.token });
+    return page.changes.length > 0;
+  }
+
+  // strategy: 'merge' — this device's rows join the account's (union)
+  //           'replace' — this device takes the account's data as-is
+  async function startSession(res, strategy) {
+    if (strategy === 'replace') {
+      // Download everything first; only then clear this device. If the
+      // network drops halfway, nothing local has been touched.
+      const { changes, cursor } = await pullAll(res.token);
+      await run(async () => {
+        setTracking(false);
+        await db.withTransactionAsync(async () => {
+          await db.execAsync('PRAGMA defer_foreign_keys = ON');
+          for (const tbl of [...DELETE_ORDER, 'week_reviews', 'settings']) await db.runAsync(`DELETE FROM ${tbl}`);
+          await db.runAsync('DELETE FROM sync_outbox');
+        });
+        await applyPulled(db, changes);
+        await setLocal(db, K.token, res.token);
+        await setLocal(db, K.email, res.user.email);
+        await setLocal(db, K.cursor, cursor);
+        setTracking(true);
+        await reload();
+      });
+    } else {
+      await run(async () => {
+        await db.runAsync('DELETE FROM sync_outbox');
+        await setLocal(db, K.token, res.token);
+        await setLocal(db, K.email, res.user.email);
+        await setLocal(db, K.cursor, 0);
+        setTracking(true);
+        await snapshotAll(db);
+      });
+    }
     account = { ...account, token: res.token, email: res.user.email };
     emit({ signedIn: true, email: res.user.email, error: null });
     await syncNow();
+  }
+
+  // Returns { ok } or { choose, pending } when the user has to pick merge vs replace.
+  async function begin(res, mode, strategy) {
+    if (!strategy && mode !== 'signup' && (await needsChoice(res))) return { choose: true, pending: res };
+    await startSession(res, strategy || 'merge');
+    return { ok: true };
+  }
+
+  async function signIn(mode, email, password, strategy) {
+    const path = mode === 'signup' ? '/auth/signup' : '/auth/login';
+    const res = await api(path, { method: 'POST', body: { email, password, device_id: account?.device } });
+    return begin(res, mode, strategy);
+  }
+
+  const finishSignIn = (pending, strategy) => startSession(pending, strategy).then(() => ({ ok: true }));
+
+  // Walked away from the merge/replace question: drop that session.
+  function cancelSignIn(pending) {
+    api('/auth/logout', { method: 'POST', token: pending.token }).catch(() => {});
+  }
+
+  // Password reset: a 6-digit code by email, then a new password.
+  const requestReset = (email) => api('/auth/reset/request', { method: 'POST', body: { email } });
+
+  async function confirmReset(email, code, password) {
+    const res = await api('/auth/reset/confirm', { method: 'POST', body: { email, code, password, device_id: account?.device } });
+    return begin(res, 'login');
   }
 
   async function signOut() {
@@ -280,5 +347,5 @@ export function createSync({ db, run, reload, onStatus }) {
     debounce = setTimeout(syncNow, 1500);
   }
 
-  return { init, syncNow, poke, signIn, signOut, deleteAccount };
+  return { init, syncNow, poke, signIn, finishSignIn, cancelSignIn, requestReset, confirmReset, signOut, deleteAccount };
 }

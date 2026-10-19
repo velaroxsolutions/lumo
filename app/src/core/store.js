@@ -292,7 +292,11 @@ export function StoreProvider({ children }) {
       reload: () => run(() => reload()),
 
       // Account (F12.2) and your data (F12.9).
-      signIn: (mode, email, password) => engine.signIn(mode, email, password),
+      signIn: (mode, email, password, strategy) => engine.signIn(mode, email, password, strategy),
+      finishSignIn: (pending, strategy) => engine.finishSignIn(pending, strategy),
+      cancelSignIn: (pending) => engine.cancelSignIn(pending),
+      requestReset: (email) => engine.requestReset(email),
+      confirmReset: (email, code, password) => engine.confirmReset(email, code, password),
       signOut: () => engine.signOut(),
       deleteAccount: (password) => engine.deleteAccount(password),
       syncNow: () => engine.syncNow(),

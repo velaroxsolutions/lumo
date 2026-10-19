@@ -28,6 +28,15 @@ python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
 `app/` is an Expo SDK 58 project (React Native 0.88, Expo Router, plain JavaScript). `server/` is FastAPI with stdlib `sqlite3`, following the Cadence conventions.
 
+### Deploy (one container: API + web app on one origin)
+
+```bash
+docker build -t lumo .
+docker run -p 8000:8000 -v lumo-data:/data -e SMTP_HOST=… -e SMTP_USER=… -e SMTP_PASS=… -e SMTP_FROM=… lumo
+```
+
+Put HTTPS in front of it. The server serves the web build with the cross-origin-isolation headers that web SQLite needs, falls back to the app for deep links like `/goals`, and keeps the database in the `/data` volume. Brand assets are regenerated with `node app/scripts/render-brand-assets.js`, and the marketing page is `landing/index.html`.
+
 The app talks to `http://localhost:8000` by default. To test on a phone, point it at your machine with `EXPO_PUBLIC_API_URL=http://<your-LAN-IP>:8000 npx expo start`. Server settings are in `server/.env.example`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for branch and commit conventions.
@@ -57,6 +66,17 @@ Feature IDs refer to the feature spec (v0.1).
 - **Days you never closed:** their unfinished tasks quietly go back to the backlog, with a one-line note. Today's plan never gets flooded with a week of leftovers.
 - **The day rolls over at 4am**, so closing the day at 12:40am still closes "today".
 - **No comparison to other users anywhere.** Insights are you against you.
+
+## Batches after Phase 2 (built)
+
+| Batch / branch | What it adds |
+|---|---|
+| **A** `feature/goals-and-tasks-v2` | Deadlines, with plain due badges and an overdue note on Today (F2.9) · recurring tasks: daily, weekdays, weekly, monthly. They spawn the next occurrence on completion, with date-derived ids so two devices never double-spawn (F2.8) · one level of subtasks (F2.7) · goals measured by a number or by linked tasks (F1.5) · checkpoints inside a goal, which can tick themselves at a value (F1.6) · pace and a projected finish date (F7.7) |
+| **B** `feature/weekly-loop` | Week ritual: look back at the week, write one line, then lay out next week task by task (F3.10, F5.4) · suggested tomorrow, with the reason for each pick (F10.1) · estimate correction from your own history (F10.2) · month heatmap (F4.3) · journal search (F5.5) · personal bests (F6.9) · energy vs. follow-through (F7.5) · when you finish things (F7.6) |
+| **C** `feature/share-card-and-brand-assets` | Shareable streak card: only the streak and this week's dots (F11.2) · real icon, adaptive icon, splash and favicon from the brand marks · landing page (F12.10) |
+| **D** `feature/server-deploy-and-account-hardening` | Dockerfile with the web app served on the same origin · password reset with an emailed 6-digit code (single-use, 15 minutes, 5 tries; signs out every other device) · signing in on a device that already has plans asks **use my account's plans** or **keep both**. Replace downloads the account's data *before* clearing anything, and offers to save a copy of the device first |
+
+The schema is now at v4, migrating additively from v1. New tables: `subtasks`, `milestones`, `goal_logs`, `week_reviews`, all synced.
 
 ## Phase 2: account & sync (built)
 
@@ -107,23 +127,26 @@ These seams hold everywhere: screens never touch the database directly. A preset
 
 ## Verified
 
-- 19 unit tests on the logic: streak and freeze edge cases, month refill, overcommit, rituals by weekday, time-block layout, the Top 3 cap, the 4am rollover, and estimate accuracy.
-- End-to-end in headless Chromium on the web build, at a 390×844 phone viewport:
-  - onboarding → capture → close the day → review → plan tomorrow → day-close animation → reload, with the data still there.
-  - a simulated 4-day run with a fake clock: the Top 3 cap blocks a 4th task, logging actual time works, carry-forward works, a skipped day spends a freeze and keeps the streak, and leftovers from an unclosed day return to the backlog.
-- `expo lint` is clean, and the production web export builds.
+- **App:** 52 unit tests. They cover streaks and freezes, planning rules, recurrence, deadlines, goal pace, estimate correction, suggestions, the weekly summary and insights. The sync tests run the real schema, migrations v1 → v4, outbox and apply code against real SQLite (`node:sqlite`). `expo lint` is clean.
+- **Server:** 27 tests. They cover auth, per-field merge, the clock guard, tombstones and revival, pagination, user isolation, input validation, export and delete, the retention metric, password reset (including the 5-try limit and single use), and same-origin web serving with the SPA fallback.
+- **Browser suites:** headless Chromium on the web build, at a 390×844 phone viewport, with a fake clock where days need to pass:
+  - Phase 1 core loop.
+  - A 4-day run.
+  - Two-device sync.
+  - Batch A: recurring, subtasks, overdue, linked-task goals, checkpoints.
+  - Batch B: estimate hint, suggestions, week ritual, journal search, heatmap, insights.
+  - Batch C: share card download, a real 1080×1350 PNG.
+  - Batch D: replace, merge, emailed reset code, sessions revoked everywhere else.
+- **Container:** the Docker image built and ran here. It reports healthy, runs as non-root, and stores data in the `/data` volume. Its pages are cross-origin isolated, and sign-up works against the same origin. A hard refresh on `/goals` loads the app with data intact.
 
 ## Not done yet / known gaps
 
-- **Not yet run on a physical iPhone or Android device.** Everything above was verified on the web build. Native should behave the same, but the reminders (F12.3) in particular need an on-device check.
-- **No hosted server yet.** Sync works against a server you run. Deploying it (Docker plus a volume for `DATA_DIR`, HTTPS) is the next ops step, and phones need it at a public HTTPS URL.
-- **Signing in on a device that already has its own separate data merges the two.** Starter areas created on both devices show up twice and need archiving by hand. Signing in from the welcome screen avoids this.
-- **There's no password reset yet.** It needs an email sender.
+- **Not yet run on a physical iPhone or Android device.** Everything was verified on the web build. Reminders, the native share sheet for the streak card and data export, and the new icons need an on-device check.
+- **Not hosted yet.** The image builds and runs, but it still needs a host, HTTPS in front, and SMTP credentials for reset emails.
+- **"Keep both" can duplicate starter areas.** Choosing it on two devices that were set up separately can leave areas like "Academics" twice; archive the extras.
 - **Moving tasks into tomorrow is tap-to-add** plus up/down reorder. Spec F3.4 says long-press drag; that's a polish item.
 - **The share-sheet capture target** (part of F2.2) needs native config and isn't built yet.
-- **The app icon and splash are still Expo placeholders.** They should be swapped for the brand assets (Sunbeam ground, Ink dots).
-- **Web hosting** must send `Cross-Origin-Embedder-Policy: credentialless` and `Cross-Origin-Opener-Policy: same-origin` for SQLite on the web. This is already configured in `app.json` for EAS Hosting.
 
 ## Next
 
-Deploy the server · password reset · widgets (F12.8) · week planning ritual (F3.10) · shareable streak card (F11.2) · goal velocity (F7.7) · Todoist import behind an adapter with a mock (F9.1).
+Host the container · run it on real phones (reminders, share sheet, icons) · widgets (F12.8) · Todoist import behind an adapter with a mock (F9.1) · day templates (F3.11) · tags and bulk actions (F2.10, F2.11) · achievement badges (F6.7).
