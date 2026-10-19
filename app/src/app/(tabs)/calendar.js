@@ -1,14 +1,15 @@
-// F4.1 day timeline and F4.2 week view.
+// F4.1 day timeline, F4.2 week view, F4.3 month heatmap.
 
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
-import { ChevronLeft, ChevronRight } from 'lucide-react-native';
+import { Pressable, Text, View } from 'react-native';
+import { router } from 'expo-router';
+import { CalendarRange, ChevronLeft, ChevronRight } from 'lucide-react-native';
 
 import { useStore } from '../../core/store';
 import { useDayPlan } from '../../core/useDayPlan';
 import { colors, radius, space, type } from '../../core/theme';
-import { addDays, formatClock, formatDuration, parseTime, prettyDate, range, shortDate, shortDay, weekStart } from '../../core/dates';
-import { Icon, Kicker, Screen, Segmented, T } from '../../components/ui';
+import { addDays, formatClock, formatDuration, fromKey, parseTime, prettyDate, range, shortDate, shortDay, toKey, weekStart } from '../../core/dates';
+import { Button, Icon, Kicker, Screen, Segmented, T } from '../../components/ui';
 import { AreaDot, EmptyNote } from '../../components/parts';
 
 const HOUR = 56;
@@ -20,22 +21,24 @@ export default function Calendar() {
   const [mode, setMode] = useState('day');
   const [anchor, setAnchor] = useState(today);
   const step = mode === 'day' ? 1 : 7;
+  const go = (dir) => setAnchor(mode === 'month' ? shiftMonth(anchor, dir) : addDays(anchor, dir * step));
+  const title = mode === 'day' ? prettyDate(anchor) : mode === 'week' ? `Week of ${shortDate(weekStart(anchor))}` : monthTitle(anchor);
 
   return (
     <Screen>
       <Kicker>Calendar</Kicker>
       <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <T v="h1" style={{ flex: 1 }} numberOfLines={1}>
-          {mode === 'day' ? prettyDate(anchor) : `Week of ${shortDate(weekStart(anchor))}`}
+          {title}
         </T>
         <View style={{ flexDirection: 'row', gap: space.sm }}>
-          <NavBtn icon={ChevronLeft} onPress={() => setAnchor(addDays(anchor, -step))} label="Previous" />
-          <NavBtn icon={ChevronRight} onPress={() => setAnchor(addDays(anchor, step))} label="Next" />
+          <NavBtn icon={ChevronLeft} onPress={() => go(-1)} label="Previous" />
+          <NavBtn icon={ChevronRight} onPress={() => go(1)} label="Next" />
         </View>
       </View>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: space.md, marginBottom: space.lg }}>
         <View style={{ flex: 1 }}>
-          <Segmented value={mode} onChange={setMode} options={[{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }]} />
+          <Segmented value={mode} onChange={setMode} options={[{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }]} />
         </View>
         {anchor !== today ? (
           <Pressable onPress={() => setAnchor(today)} hitSlop={8}>
@@ -43,7 +46,14 @@ export default function Calendar() {
           </Pressable>
         ) : null}
       </View>
-      {mode === 'day' ? <DayView date={anchor} /> : <WeekView anchor={anchor} onPick={(d) => { setAnchor(d); setMode('day'); }} />}
+      {mode === 'day' ? <DayView date={anchor} /> : null}
+      {mode === 'week' ? (
+        <>
+          <Button small kind="secondary" icon={CalendarRange} title="Plan the week" onPress={() => router.push('/week')} style={{ alignSelf: 'flex-start', marginBottom: space.md }} />
+          <WeekView anchor={anchor} onPick={(d) => { setAnchor(d); setMode('day'); }} />
+        </>
+      ) : null}
+      {mode === 'month' ? <MonthView anchor={anchor} onPick={(d) => { setAnchor(d); setMode('day'); }} /> : null}
     </Screen>
   );
 }
@@ -154,6 +164,82 @@ function WeekView({ anchor, onPick }) {
       {range(start, addDays(start, 6)).map((d) => (
         <WeekDay key={d} date={d} onPick={onPick} />
       ))}
+    </View>
+  );
+}
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function shiftMonth(key, n) {
+  const d = fromKey(key);
+  return toKey(new Date(d.getFullYear(), d.getMonth() + n, 1, 12));
+}
+
+function monthTitle(key) {
+  const d = fromKey(key);
+  return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+// One hue (Lagoon), light → full by share of the plan that got done.
+const STEPS = [0.2, 0.38, 0.56, 0.78, 1];
+const step = (rate) => STEPS[Math.min(STEPS.length - 1, Math.floor(rate * STEPS.length))];
+
+function MonthView({ anchor, onPick }) {
+  const { today, plansByDate, itemsByPlan } = useStore();
+  const d = fromKey(anchor);
+  const first = toKey(new Date(d.getFullYear(), d.getMonth(), 1, 12));
+  const last = toKey(new Date(d.getFullYear(), d.getMonth() + 1, 0, 12));
+  const cells = range(weekStart(first), addDays(weekStart(last), 6)).map((k) => {
+    const plan = plansByDate[k];
+    const items = plan ? itemsByPlan[plan.id] || [] : [];
+    return { k, plan, items, n: items.filter((i) => i.outcome === 'done').length, inMonth: k >= first && k <= last };
+  });
+  const month = cells.filter((c) => c.inMonth);
+  const planned = month.reduce((a, c) => a + c.items.length, 0);
+  const done = month.reduce((a, c) => a + c.n, 0);
+  return (
+    <View>
+      <View style={{ flexDirection: 'row', marginBottom: 6 }}>
+        {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((x, i) => (
+          <T key={i} v="caption" style={{ flex: 1, textAlign: 'center' }}>{x}</T>
+        ))}
+      </View>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+        {cells.map(({ k, plan, items, n, inMonth }) => {
+          const future = k > today;
+          const rate = items.length && !future ? n / items.length : null;
+          const bg = rate == null ? colors.surface : colors.lagoon;
+          const strong = rate != null && step(rate) >= 0.78;
+          return (
+            <View key={k} style={{ width: `${100 / 7}%`, padding: 3 }}>
+              <Pressable
+                onPress={() => onPick(k)}
+                accessibilityLabel={`${prettyDate(k)}: ${items.length ? `${n} of ${items.length} done` : 'nothing planned'}`}
+                style={{ aspectRatio: 1, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', opacity: inMonth ? 1 : 0.25, borderWidth: k === today || (future && items.length) ? 2 : 0, borderColor: k === today ? colors.sunbeam : colors.violet, overflow: 'hidden' }}
+              >
+                <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: bg, opacity: rate == null ? 1 : step(rate) }} />
+                <Text style={[type.data, { fontSize: 12, color: strong ? colors.ink : colors.cloud }]}>{Number(k.slice(8))}</Text>
+                {plan?.closed_at ? <View style={{ position: 'absolute', bottom: 4, width: 5, height: 5, borderRadius: 3, backgroundColor: strong ? colors.ink : colors.sunbeam }} /> : null}
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space.md }}>
+        <T v="caption">Less done</T>
+        {STEPS.map((o) => (
+          <View key={o} style={{ width: 16, height: 16, borderRadius: 4, backgroundColor: colors.lagoon, opacity: o }} />
+        ))}
+        <T v="caption">More</T>
+        <View style={{ flex: 1 }} />
+        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: colors.sunbeam }} />
+        <T v="caption">lit</T>
+        <View style={{ width: 12, height: 12, borderRadius: 3, borderWidth: 2, borderColor: colors.violet }} />
+        <T v="caption">planned</T>
+      </View>
+      <T v="data" style={{ marginTop: space.md, color: colors.muted }}>
+        {planned ? `${done} of ${planned} planned items done this month` : 'Nothing planned this month yet.'}
+      </T>
     </View>
   );
 }

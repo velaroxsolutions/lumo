@@ -10,13 +10,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { AppState } from 'react-native';
 import { useSQLiteContext } from 'expo-sqlite';
 
-import { TABLES, insert, loadTable, nowIso, planId as planIdFor, planItemId, remove, removeWhere, setSetting, uid, update } from './db';
+import { TABLES, insert, loadTable, nowIso, planId as planIdFor, planItemId, remove, removeWhere, setSetting, uid, update, weekReviewId } from './db';
 import { createSync } from './sync';
 import { addDays, todayKey } from './dates';
 import { getSystem, DEFAULT_SYSTEM } from './systems';
 import { autoTimes, ritualsForDate } from './logic/plan';
 import { nextDue, occurrenceId } from './logic/recurrence';
 import { historyOf, pace, progressOf } from './logic/goals';
+import { estimateRatios } from './logic/estimates';
 import { computeStreak } from './logic/streak';
 
 export const DEFAULT_SETTINGS = {
@@ -600,6 +601,14 @@ export function StoreProvider({ children }) {
         });
       }),
 
+      // F3.10 / F5.4 — the week ritual's one line about the week that ended.
+      saveWeekReview: act(['week_reviews'], async (weekStartKey, note) => {
+        const id = weekReviewId(weekStartKey);
+        const existing = await db.getFirstAsync('SELECT id FROM week_reviews WHERE id = ?', [id]);
+        if (existing) await update(db, 'week_reviews', id, { note: note || '', closed_at: nowIso() });
+        else await insert(db, 'week_reviews', { id, week_start: weekStartKey, note: note || '', closed_at: nowIso() });
+      }),
+
       // Evening ritual, final step: this is what lights the dot.
       commitDay: act(['day_plans'], async ({ date, review, mood }) => {
         const planId = await ensurePlan(date);
@@ -661,6 +670,8 @@ export function StoreProvider({ children }) {
       rituals: data.rituals,
       ritualsById: byId(data.rituals),
       goalStats,
+      estimates: estimateRatios(data.tasks),
+      weekReviews: Object.fromEntries(data.week_reviews.map((w) => [w.week_start, w])),
       tasks: data.tasks,
       tasksById: byId(data.tasks),
       tasksByGoal,

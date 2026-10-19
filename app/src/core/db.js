@@ -7,7 +7,7 @@
 // IDs are random text and every row carries updated_at, so v2 sync can do
 // last-write-wins per row without reshaping anything.
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export const MIGRATIONS = {
   1: `
@@ -151,6 +151,18 @@ export const MIGRATIONS = {
       updated_at TEXT NOT NULL
     );
   `,
+  // v4 — the weekly loop (F3.10/F5.4): one line about the week that ended.
+  // Keyed 'wk-<monday>' so two devices write the same row.
+  4: `
+    CREATE TABLE IF NOT EXISTS week_reviews (
+      id TEXT PRIMARY KEY NOT NULL,
+      week_start TEXT NOT NULL UNIQUE,
+      note TEXT NOT NULL DEFAULT '',
+      closed_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `,
 };
 
 export async function initDb(db) {
@@ -179,10 +191,12 @@ export async function initDb(db) {
 
 export const TABLES = [
   'areas', 'goals', 'rituals', 'tasks', 'day_plans', 'plan_items', 'settings', 'subtasks', 'milestones', 'goal_logs',
+  'week_reviews',
 ];
 
 // Deterministic ids for rows two devices might both create for the same day.
 export const planId = (date) => `dp-${date}`;
+export const weekReviewId = (weekStartKey) => `wk-${weekStartKey}`;
 export const planItemId = (date, { taskId, ritualId }) => (taskId ? `pi-${date}-${taskId}` : `pr-${date}-${ritualId}`);
 
 // ---- change tracking ---------------------------------------------------------
@@ -229,6 +243,7 @@ const ORDER = {
   subtasks: 'sort_order, created_at',
   milestones: 'sort_order, created_at',
   goal_logs: 'logged_at',
+  week_reviews: 'week_start',
 };
 
 export async function loadTable(db, table) {
@@ -255,6 +270,7 @@ const COLUMNS = {
   subtasks: ['task_id', 'title', 'done', 'sort_order'],
   milestones: ['goal_id', 'title', 'target_value', 'done', 'done_at', 'sort_order'],
   goal_logs: ['goal_id', 'value', 'logged_at'],
+  week_reviews: ['week_start', 'note', 'closed_at'],
 };
 
 function checkCols(table, obj) {

@@ -8,6 +8,7 @@ import { Plus, X } from 'lucide-react-native';
 import { colors, fonts, radius, space, type } from '../core/theme';
 import { addDays, formatDuration, prettyDate, shortDate, weekStart } from '../core/dates';
 import { REPEATS } from '../core/logic/recurrence';
+import { corrected, ratioFor } from '../core/logic/estimates';
 import { useTasks } from '../core/useTasks';
 import { useAreas } from '../core/useAreas';
 import { useGoals } from '../core/useGoals';
@@ -206,6 +207,7 @@ function TaskForm({ task, onClose }) {
         ) : null}
         <Kicker style={{ marginTop: space.lg }}>Estimate</Kicker>
         <EstimatePicker value={draft.estimated_minutes} onChange={set('estimated_minutes')} />
+        <EstimateHint areaId={draft.area_id} minutes={draft.estimated_minutes} onApply={set('estimated_minutes')} />
         <Kicker style={{ marginTop: space.lg }}>{draft.repeat && draft.repeat !== 'none' ? 'Next due' : 'Due'}</Kicker>
         <DatePick value={draft.deadline} onChange={set('deadline')} allowNone={!draft.repeat || draft.repeat === 'none'} />
         <Kicker style={{ marginTop: space.lg }}>Repeats</Kicker>
@@ -244,6 +246,22 @@ function TaskForm({ task, onClose }) {
           <Button title="Save" onPress={save} style={{ flex: 1 }} />
         </View>
     </ScrollView>
+  );
+}
+
+// F10.2 — "You say 30m; tasks like this take you about 45m."
+function EstimateHint({ areaId, minutes, onApply }) {
+  const { estimates, areasById } = useStore();
+  const r = ratioFor(estimates, areaId);
+  const better = corrected(minutes, r);
+  if (!better) return null;
+  const where = estimates.byArea[areaId] != null ? `${areasById[areaId]?.name} tasks` : 'Your tasks';
+  return (
+    <Press onPress={() => onApply(better)} style={{ marginTop: space.sm, alignSelf: 'flex-start' }}>
+      <T v="caption" style={{ color: colors.lagoon }}>
+        {where} take you about {r.toFixed(1)}× your guess — budget {formatDuration(better)}? Tap to use it.
+      </T>
+    </Press>
   );
 }
 

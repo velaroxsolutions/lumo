@@ -62,6 +62,7 @@ export default function RootLayout() {
                 <Stack.Screen name="(tabs)" />
                 <Stack.Screen name="onboarding" options={{ gestureEnabled: false }} />
                 <Stack.Screen name="ritual" options={{ presentation: 'fullScreenModal', gestureEnabled: false }} />
+                <Stack.Screen name="week" options={{ presentation: 'fullScreenModal', gestureEnabled: false }} />
                 <Stack.Screen name="settings" />
                 <Stack.Screen name="areas" />
                 <Stack.Screen name="journal" />

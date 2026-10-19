@@ -12,6 +12,7 @@ import { Clock, Plus, Sparkles, X } from 'lucide-react-native';
 import { useStore } from '../core/store';
 import { useDayPlan } from '../core/useDayPlan';
 import { useTasks } from '../core/useTasks';
+import { useSuggestions } from '../core/useSuggestions';
 import { useGoals } from '../core/useGoals';
 import { colors, radius, space } from '../core/theme';
 import { formatClock, formatDuration, formatTime, parseTime, prettyDate, shortDay } from '../core/dates';
@@ -168,6 +169,7 @@ function PlanStep({ date }) {
   const [title, setTitle] = useState('');
   const [toast, setToast] = useState(null);
   const [timing, setTiming] = useState(null);
+  const suggest = useSuggestions(plan);
 
   useEffect(() => {
     plan.ensure();
@@ -209,6 +211,11 @@ function PlanStep({ date }) {
           {formatDuration(plan.load)} / {formatDuration(plan.available)}
         </T>
       </View>
+      {suggest.realisticDiffers ? (
+        <T v="caption" style={{ marginTop: -4, marginBottom: space.sm }}>
+          From how long things really take you, that's closer to {formatDuration(suggest.realistic)}.
+        </T>
+      ) : null}
       {plan.warning ? (
         <Card tone="elevated" style={{ marginBottom: space.md, paddingVertical: space.md }}>
           <T>{overcommitLine(plan.warning.total, plan.warning.available)}</T>
@@ -237,6 +244,36 @@ function PlanStep({ date }) {
         <Field value={title} onChangeText={setTitle} placeholder="Something new for tomorrow" style={{ flex: 1 }} onSubmitEditing={addNew} returnKeyType="done" />
         <Button title="Add" kind="secondary" onPress={addNew} disabled={!title.trim()} />
       </View>
+
+      {suggest.picks.length && !plan.capReached ? (
+        <Card style={{ marginTop: space.xl, borderWidth: 2, borderColor: colors.violet }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: space.sm }}>
+            <T v="h2">Suggested</T>
+            <Button
+              small
+              kind="violet"
+              title="Add these"
+              onPress={async () => {
+                for (const p of suggest.picks) {
+                  const res = await plan.add(p.task.id);
+                  if (res && res.ok === false) break;
+                }
+                haptic();
+              }}
+            />
+          </View>
+          {suggest.picks.map((p) => (
+            <Press key={p.task.id} onPress={() => addFromBacklog(p.task.id)} scaleTo={0.98} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 8 }}>
+              <View style={{ flex: 1 }}>
+                <T v="emphasis" numberOfLines={1}>{p.task.title}</T>
+                <T v="caption">{p.reasons.join(' · ')}</T>
+              </View>
+              <T v="data" style={{ fontSize: 13 }}>{formatDuration(p.minutes)}</T>
+              <Icon as={Plus} size={18} color={colors.violet} />
+            </Press>
+          ))}
+        </Card>
+      ) : null}
 
       <T v="h2" style={{ marginTop: space.xl, marginBottom: space.md }}>Backlog</T>
       {groups.length ? (

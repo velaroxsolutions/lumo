@@ -9,7 +9,7 @@ import { useStore } from '../../core/store';
 import { colors, radius, space, type } from '../../core/theme';
 import { formatDuration, shortDate, shortDay } from '../../core/dates';
 import { MOODS, numWord } from '../../core/copy';
-import { MIN_ACCURACY_SAMPLES, areaWeek, completionSeries, estimateAccuracy, moodAverage } from '../../core/logic/insights';
+import { MIN_ACCURACY_SAMPLES, TIME_BLOCKS, areaWeek, completionSeries, estimateAccuracy, finishTimes, moodAverage, moodVsCompletion, personalBests } from '../../core/logic/insights';
 import { Card, Kicker, Screen, Segmented, T } from '../../components/ui';
 import { SectionTitle } from '../../components/parts';
 
@@ -29,6 +29,13 @@ export default function Insights() {
   const planned = series.reduce((n, d) => n + d.planned, 0);
   const done = series.reduce((n, d) => n + d.done, 0);
   const mood = moodAverage(series);
+  const long = useMemo(() => completionSeries(s.plans, s.itemsByPlan, today, 90), [s.plans, s.itemsByPlan, today]);
+  const energy = moodVsCompletion(long);
+  const times = useMemo(() => finishTimes(s.tasks), [s.tasks]);
+  const bests = useMemo(
+    () => personalBests({ streak, plans: s.plans, itemsByPlan: s.itemsByPlan, tasks: s.tasks }),
+    [streak, s.plans, s.itemsByPlan, s.tasks],
+  );
 
   return (
     <Screen>
@@ -87,6 +94,59 @@ export default function Insights() {
               {acc.samples} / {MIN_ACCURACY_SAMPLES} tasks logged
             </T>
           </>
+        )}
+      </Card>
+
+      <SectionTitle>Personal bests</SectionTitle>
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+        <Stat label="Longest streak" value={`${bests.longestStreak}d`} />
+        <Stat label="Best week" value={bests.bestWeek ? `${bests.bestWeek.done} done` : '—'} sub={bests.bestWeek ? `week of ${shortDate(bests.bestWeek.start)}` : null} />
+        <Stat
+          label="Sharpest estimates"
+          value={bests.bestAccuracy ? `${bests.bestAccuracy.ratio.toFixed(2)}×` : '—'}
+          sub={bests.bestAccuracy ? `week of ${shortDate(bests.bestAccuracy.start)}` : 'log a few actual times'}
+        />
+      </View>
+
+      <SectionTitle>When you get things done</SectionTitle>
+      <Card>
+        {times ? (
+          <>
+            <T>
+              Most of your finishing happens in the <T v="emphasis" style={{ color: colors.sunbeam }}>{times.peak.label.toLowerCase()}</T>. Put the hard stuff there.
+            </T>
+            <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 6, height: 90, marginTop: space.md }}>
+              {TIME_BLOCKS.map((b) => {
+                const max = Math.max(...Object.values(times.counts), 1);
+                const n = times.counts[b.key];
+                return (
+                  <View key={b.key} style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end', height: '100%' }}>
+                    <T style={[type.data, { fontSize: 11, color: colors.muted }]}>{n || ''}</T>
+                    <View style={{ width: '70%', height: Math.max(3, (n / max) * 60), borderTopLeftRadius: 4, borderTopRightRadius: 4, backgroundColor: b.key === times.peak.key ? colors.sunbeam : colors.violet }} />
+                  </View>
+                );
+              })}
+            </View>
+            <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
+              {TIME_BLOCKS.map((b) => (
+                <T key={b.key} v="caption" style={{ flex: 1, textAlign: 'center', fontSize: 10 }}>{b.label}</T>
+              ))}
+            </View>
+          </>
+        ) : (
+          <T style={{ color: colors.muted }}>Finish a handful of tasks and this shows when you're sharpest.</T>
+        )}
+      </Card>
+
+      <SectionTitle>Energy and follow-through</SectionTitle>
+      <Card>
+        {energy ? (
+          <T>
+            On good-energy days you finish {Math.round(energy.high * 100)}% of the plan; on low days, {Math.round(energy.low * 100)}%.
+            {energy.low < energy.high - 0.15 ? ' On a low day, plan lighter — it still counts.' : ' Your plans hold up either way.'}
+          </T>
+        ) : (
+          <T style={{ color: colors.muted }}>Rate your energy when you close the day. After a few highs and lows, this compares them.</T>
         )}
       </Card>
     </Screen>
@@ -168,7 +228,7 @@ function AreaBar({ w, max }) {
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
         <T v="emphasis" style={{ fontSize: 14 }}>{w.area.name}</T>
         <T style={[type.data, { fontSize: 12, color: colors.muted }]}>
-          {formatDuration(w.doneMin)} of {formatDuration(w.plannedMin)}
+          {formatDuration(w.doneMin)} done · {formatDuration(w.plannedMin)} planned
         </T>
       </View>
       <View style={{ height: 12, width: `${Math.max(trackPct, 2)}%`, backgroundColor: colors.elevated, borderRadius: 6, overflow: 'hidden' }}>

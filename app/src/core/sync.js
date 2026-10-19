@@ -16,7 +16,7 @@ import { PARENTS, TABLES, getLocal, nowIso, setLocal, setTracking, syncColumns, 
 const K = { token: 'auth_token', email: 'account_email', cursor: 'sync_cursor', device: 'device_id', last: 'last_sync_at' };
 const PUSH_BATCH = 500;
 // Upserts parents-first, deletes children-first, so foreign keys always hold.
-const UPSERT_ORDER = ['areas', 'goals', 'milestones', 'goal_logs', 'rituals', 'tasks', 'subtasks', 'day_plans', 'plan_items', 'settings'];
+const UPSERT_ORDER = ['areas', 'goals', 'milestones', 'goal_logs', 'rituals', 'tasks', 'subtasks', 'day_plans', 'plan_items', 'settings', 'week_reviews'];
 const DELETE_ORDER = ['plan_items', 'subtasks', 'tasks', 'day_plans', 'rituals', 'goal_logs', 'milestones', 'goals', 'areas'];
 // Snapshot timestamp for settings that were never edited after signing in:
 // old enough that an account's existing settings win over this device's.

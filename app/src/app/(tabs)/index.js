@@ -16,6 +16,7 @@ import { prettyDate, shortDate } from '../../core/dates';
 import { brokenLine, fmtNum, milestoneLine, overcommitLine, paceLine, tasksLeftLine } from '../../core/copy';
 import { showBrokenNote, weekDots } from '../../core/logic/streak';
 import { areaWeek } from '../../core/logic/insights';
+import { weekRitualDue } from '../../core/logic/weekly';
 import { WeekDots } from '../../components/WeekMark';
 import { Button, Card, Icon, Kicker, Press, Screen, T, haptic } from '../../components/ui';
 import { EmptyNote, PlanRow, ProgressBar, Ring, SectionTitle, Toast } from '../../components/parts';
@@ -103,6 +104,15 @@ export default function Today() {
             </T>
             <Button small kind="secondary" title="OK" onPress={actions.dismissStaleNote} />
           </Card>
+        ) : null}
+
+        {weekRitualDue(today, s.weekReviews) ? (
+          <Press onPress={() => router.push('/week')} scaleTo={0.98} style={{ marginTop: space.md }}>
+            <Card style={{ borderWidth: 2, borderColor: colors.violet }}>
+              <Kicker style={{ color: colors.violet }}>Week ritual</Kicker>
+              <T>Five minutes: look back at the week, then lay out the next one.</T>
+            </Card>
+          </Press>
         ) : null}
 
         {overdue.length ? (
